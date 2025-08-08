@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 app = FastAPI()
 
@@ -9,6 +9,10 @@ def read_root():
 @app.websocket("/ws/{username}")
 async def websocket_endpoint(websocket: WebSocket, username: str):
     await websocket.accept()
-    while True:
-        data = await websocket.receive_text()
-        await websocket.send_text(f"Echo: {data}")
+    try:
+        while True:
+            data = await websocket.receive_text()
+            await websocket.send_text(f"Messaggio ricevuto da {username}: {data}")
+    except WebSocketDisconnect:
+        print(f"{username} disconnesso.")
+
