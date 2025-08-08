@@ -6,7 +6,7 @@ app = FastAPI()
 def read_root():
     return {"status": "ok"}
 
-@app.websocket("/ws/{username}")
+@app.websocket("/wss/{username}")
 async def websocket_endpoint(websocket: WebSocket, username: str):
     await websocket.accept()
     try:
