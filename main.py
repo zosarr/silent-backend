@@ -14,10 +14,10 @@ async def join_room(room: str, ws: WebSocket):
     rooms.setdefault(room, set()).add(ws)
 
 async def leave_room(room: str, ws: WebSocket):
-    conns = rooms.get(room)
-    if conns and ws in conns:
-        conns.remove(ws)
-        if not conns:
+    peers = rooms.get(room)
+    if peers and ws in peers:
+        peers.remove(ws)
+        if not peers:
             rooms.pop(room, None)
 
 async def broadcast(room: str, msg: str, sender: WebSocket):
@@ -31,16 +31,17 @@ async def broadcast(room: str, msg: str, sender: WebSocket):
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket, room: str = Query("default")):
     await join_room(room, ws)
+    # benvenuto + keepalive
     await ws.send_text('{"type":"info","msg":"welcome","room":"%s"}' % room)
 
-    async def keepalive():
+    async def ka():
         while True:
             await asyncio.sleep(20)
             try:
                 await ws.send_text('{"type":"ping"}')
             except Exception:
                 break
-    ka = asyncio.create_task(keepalive())
+    task = asyncio.create_task(ka())
 
     try:
         while True:
@@ -49,5 +50,5 @@ async def ws_endpoint(ws: WebSocket, room: str = Query("default")):
     except WebSocketDisconnect:
         pass
     finally:
-        ka.cancel()
+        task.cancel()
         await leave_room(room, ws)
