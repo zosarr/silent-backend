@@ -31,24 +31,24 @@ async def broadcast(room: str, msg: str, sender: WebSocket):
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket, room: str = Query("default")):
     await join_room(room, ws)
-    # benvenuto + keepalive
-    await ws.send_text('{"type":"info","msg":"welcome","room":"%s"}' % room)
-
-    async def ka():
-        while True:
-            await asyncio.sleep(20)
-            try:
-                await ws.send_text('{"type":"ping"}')
-            except Exception:
-                break
-    task = asyncio.create_task(ka())
+    # messaggio di benvenuto/keepalive puoi lasciarlo se vuoi
 
     try:
         while True:
-            data = await ws.receive_text()
-            await broadcast(room, data, sender=ws)
+            packet = await ws.receive()
+            if packet.get("text") is not None:
+                text = packet["text"]
+                # inoltra testo
+                for peer in list(rooms.get(room, [])):
+                    if peer is not ws:
+                        await peer.send_text(text)
+            elif packet.get("bytes") is not None:
+                b = packet["bytes"]
+                # inoltra binario (immagini, ecc.)
+                for peer in list(rooms.get(room, [])):
+                    if peer is not ws:
+                        await peer.send_bytes(b)
     except WebSocketDisconnect:
         pass
     finally:
-        task.cancel()
         await leave_room(room, ws)
