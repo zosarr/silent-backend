@@ -7,7 +7,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 
 app = FastAPI()
 
-# Log più verboso
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("silent-backend")
 
@@ -46,44 +45,52 @@ async def root():
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket, room: str = Query("default")):
-    # Accetta connessione e registra il peer
     await join_room(room, ws)
 
-    # (facoltativo) messaggio di benvenuto di servizio
+    # opzionale: messaggio di servizio
     try:
         await ws.send_text('{"type":"info","msg":"welcome","room":"%s"}' % room)
     except Exception:
         pass
 
-    # loop ricezione/relay con gestione TEXT + BYTES
     try:
         while True:
-            packet = await ws.receive()
-            # packet è un dict; chiavi attese: 'text' o 'bytes'
+            try:
+                packet = await ws.receive()  # {'type': 'websocket.receive', 'text': ...} oppure {'bytes': ...}
+            except WebSocketDisconnect:
+                logger.info("WS disconnect (WebSocketDisconnect): room=%s", room)
+                break
+            except RuntimeError as e:
+                # Questo è l'errore che vedevi: il client ha già inviato 'disconnect'
+                logger.info('WS disconnect (RuntimeError on receive): %s', e)
+                break
+            except Exception as e:
+                logger.error("Unexpected receive exception: %s\n%s", e, traceback.format_exc())
+                break
+
+            # Alcune versioni possono comunque esporre il tipo evento:
+            ev_type = packet.get("type")
+            if ev_type == "websocket.disconnect":
+                logger.info("WS disconnect event: room=%s", room)
+                break
+
             if packet.get("text") is not None:
                 text = packet["text"]
-                # inoltra agli altri
+                # inoltra testo agli altri peer della stanza
                 for peer in list(rooms.get(room, [])):
                     if peer is not ws:
                         await safe_send_text(peer, text, room)
 
             elif packet.get("bytes") is not None:
                 data = packet["bytes"]
-                # inoltra agli altri
+                # inoltra binario (immagini/audio) agli altri
                 for peer in list(rooms.get(room, [])):
                     if peer is not ws:
                         await safe_send_bytes(peer, data, room)
 
             else:
-                # altri tipi/keepalive
+                # keep-alive / ignora
                 await asyncio.sleep(0)
-
-    except WebSocketDisconnect:
-        logger.info("WS disconnect: room=%s", room)
-
-    except Exception as e:
-        # LOG completo per capire l’errore reale su Render
-        logger.error("Exception in WS loop: %s\n%s", e, traceback.format_exc())
 
     finally:
         await leave_room(room, ws)
