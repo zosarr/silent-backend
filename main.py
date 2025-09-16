@@ -5,6 +5,9 @@ import asyncio
 app = FastAPI()
 rooms: Dict[str, Set[WebSocket]] = {}
 
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
 @app.get("/")
 async def root():
     return {"status": "ok"}
