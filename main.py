@@ -1,6 +1,8 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from typing import Dict, Set
 import asyncio
+import json
+
 
 app = FastAPI()
 rooms: Dict[str, Set[WebSocket]] = {}
@@ -48,8 +50,22 @@ async def ws_endpoint(ws: WebSocket, room: str = Query("default")):
 
     try:
         while True:
-            data = await ws.receive_text()
-            await broadcast(room, data, sender=ws)
+    data = await ws.receive_text()
+    try:
+        msg = json.loads(data)
+    except Exception:
+        # non è JSON → inoltra agli altri com'è
+        await broadcast(room, data, sender=ws)
+        continue
+
+    # Se il client manda ping, rispondi subito con pong e NON fare broadcast
+    if msg.get("type") == "ping":
+        await ws.send_text(json.dumps({"type": "pong"}))
+        continue
+
+    # altrimenti inoltra agli altri peer della stanza
+    await broadcast(room, data, sender=ws)
+
     except WebSocketDisconnect:
         pass
     finally:
