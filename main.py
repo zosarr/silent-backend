@@ -18,9 +18,9 @@ async def root():
     return {"status": "ok"}
 
 async def broadcast(room: str, data: str, sender: WebSocket | None = None):
-    peers = rooms.get(room, set())
+    utenti connessi = rooms.get(room, set())
     dead = []
-    for ws in peers:
+    for ws in utenti connessi:
         if ws is sender:
             continue
         try:
@@ -32,25 +32,25 @@ async def broadcast(room: str, data: str, sender: WebSocket | None = None):
 
 def presence_payload(room: str) -> str:
     count = len(rooms.get(room, set()))
-    return json.dumps({"type": "presence", "room": room, "peers": count})
+    return json.dumps({"type": "presence", "room": room, "utenti connessi": count})
 
 async def enter_room(room: str, ws: WebSocket):
-    peers = rooms.setdefault(room, set())
-    peers.add(ws)
+    utenti connessi = rooms.setdefault(room, set())
+    utenti connessi.add(ws)
     # Announce new presence to everyone
     await broadcast(room, presence_payload(room))
 
 async def leave_room(room: str, ws: WebSocket):
-    peers = rooms.get(room)
-    if not peers:
+    utenti connessi = rooms.get(room)
+    if not utenti connessi:
         return
-    peers.discard(ws)
+    utenti connessi.discard(ws)
     # Announce updated presence
     try:
         await broadcast(room, presence_payload(room))
     except Exception:
         pass
-    if not peers:
+    if not utenti connessi:
         rooms.pop(room, None)
 
 @app.websocket("/ws")
