@@ -1,87 +1,13 @@
-# main.py
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
-from typing import Dict, Set, Optional
-import asyncio, json, secrets, time
+from typing import Dict, Set
+import asyncio
+import json
 
 app = FastAPI()
-
-# Stato in memoria
 rooms: Dict[str, Set[WebSocket]] = {}
-meta: Dict[WebSocket, dict] = {}  # { id, room, joinedAt, lastSeen, tokens, lastRefill }
 
-PING_EVERY_MS = 30_000            # ping server→client
-DROP_IF_SILENT_MS = 70_000        # se nessuna attività (pong o msg) per ~2 ping → drop
-MSGS_PER_SEC = 20                 # rate limit (token bucket)
-BURST = 40
-MAX_MSG_BYTES = 2_000_000         # ~2MB (protezione: per immagini/audio meglio mandare URL, non binario su WS)
-
-def now_ms() -> int:
-    return int(time.time() * 1000)
-
-def in_room(room: str) -> Set[WebSocket]:
-    if room not in rooms:
-        rooms[room] = set()
-    return rooms[room]
-
-def broadcast(room: str, payload: dict, except_ws: Optional[WebSocket] = None):
-    data = json.dumps(payload)
-    dead = []
-    for ws in list(rooms.get(room, ())):
-        if ws is except_ws:
-            continue
-        try:
-            asyncio.create_task(ws.send_text(data))
-        except Exception:
-            dead.append(ws)
-    for ws in dead:
-        asyncio.create_task(leave_room(meta.get(ws, {}).get("room"), ws))
-
-def snapshot(room: str) -> dict:
-    members = []
-    for ws in rooms.get(room, ()):
-        m = meta.get(ws)
-        if not m: 
-            continue
-        members.append({"id": m["id"], "joinedAt": m["joinedAt"]})
-    return {"type": "presence", "room": room, "members": members, "ts": now_ms()}
-
-async def join_room(room: str, ws: WebSocket):
-    await ws.accept()
-    in_room(room).add(ws)
-    meta[ws] = {
-        "id": secrets.token_urlsafe(6),
-        "room": room,
-        "joinedAt": now_ms(),
-        "lastSeen": now_ms(),
-        "tokens": BURST,
-        "lastRefill": time.time(),
-    }
-
-async def leave_room(room: Optional[str], ws: WebSocket):
-    try:
-        peers = rooms.get(room or "", None)
-        if peers and ws in peers:
-            peers.remove(ws)
-            if not peers:
-                rooms.pop(room, None)
-        m = meta.pop(ws, None)
-        if m and room:
-            broadcast(room, {"type": "leave", "id": m["id"], "ts": now_ms()})
-    except Exception:
-        pass
-
-def consume_rate(ws: WebSocket) -> bool:
-    m = meta.get(ws)
-    if not m:
-        return True
-    now = time.time()
-    elapsed = now - m["lastRefill"]
-    m["lastRefill"] = now
-    m["tokens"] = min(BURST, m["tokens"] + elapsed * MSGS_PER_SEC)
-    if m["tokens"] < 1:
-        return False
-    m["tokens"] -= 1
-    return True
+PING_INTERVAL = 20  # seconds
+PONG_TIMEOUT = 15   # seconds
 
 @app.get("/healthz")
 def healthz():
@@ -91,87 +17,100 @@ def healthz():
 async def root():
     return {"status": "ok"}
 
+async def broadcast(room: str, data: str, sender: WebSocket | None = None):
+    peers = rooms.get(room, set())
+    dead = []
+    for ws in peers:
+        if ws is sender:
+            continue
+        try:
+            await ws.send_text(data)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        await leave_room(room, ws)
+
+def presence_payload(room: str) -> str:
+    count = len(rooms.get(room, set()))
+    return json.dumps({"type": "presence", "room": room, "peers": count})
+
+async def enter_room(room: str, ws: WebSocket):
+    peers = rooms.setdefault(room, set())
+    peers.add(ws)
+    # Announce new presence to everyone
+    await broadcast(room, presence_payload(room))
+
+async def leave_room(room: str, ws: WebSocket):
+    peers = rooms.get(room)
+    if not peers:
+        return
+    peers.discard(ws)
+    # Announce updated presence
+    try:
+        await broadcast(room, presence_payload(room))
+    except Exception:
+        pass
+    if not peers:
+        rooms.pop(room, None)
+
 @app.websocket("/ws")
-async def ws_endpoint(ws: WebSocket, room: str = Query("default")):
-    await join_room(room, ws)
-    me = meta[ws]
-    # Benvenuto + presenza iniziale
-    await ws.send_text(json.dumps({"type": "joined", "id": me["id"], "room": room, "ts": now_ms()}))
-    await ws.send_text(json.dumps(snapshot(room)))
-    broadcast(room, {"type": "join", "id": me["id"], "ts": now_ms()}, except_ws=ws)
+async def ws_endpoint(ws: WebSocket, room: str = Query("test")):
+    await ws.accept()
+    await enter_room(room, ws)
 
-    # Heartbeat: ping periodico
+    # Per-connection state
+    last_pong = asyncio.get_event_loop().time()
+
     async def pinger():
+        nonlocal last_pong
         while True:
-            await asyncio.sleep(PING_EVERY_MS / 1000)
             try:
-                await ws.send_text(json.dumps({"type": "ping", "ts": now_ms()}))
+                await ws.send_text(json.dumps({"type": "ping"}))
             except Exception:
+                # Connection is dead; cleanup handled below
                 break
-
-    # Watchdog: chiude se silenzioso
-    async def watchdog():
-        while True:
-            await asyncio.sleep(1.0)
-            m = meta.get(ws)
-            if not m:
-                break
-            if now_ms() - m["lastSeen"] > DROP_IF_SILENT_MS:
+            # Wait and check for pong
+            await asyncio.sleep(PING_INTERVAL)
+            if asyncio.get_event_loop().time() - last_pong > PONG_TIMEOUT + PING_INTERVAL:
+                # Didn't receive pong in time; close
                 try:
                     await ws.close()
-                except Exception:
-                    pass
-                break
+                finally:
+                    break
 
-    ping_task = asyncio.create_task(pinger())
-    wd_task = asyncio.create_task(watchdog())
+    task = asyncio.create_task(pinger())
 
     try:
         while True:
             data = await ws.receive_text()
-            if len(data.encode("utf-8")) > MAX_MSG_BYTES:
-                # troppo grande: ignora silenziosamente
-                continue
-
-            # Prova a decodare JSON
-            msg = None
             try:
                 msg = json.loads(data)
             except Exception:
-                pass
-
-            # Attività vista
-            if ws in meta:
-                meta[ws]["lastSeen"] = now_ms()
-
-            # Rate-limit
-            if not consume_rate(ws):
+                # Non-JSON payloads are just relayed
+                await broadcast(room, data, sender=ws)
                 continue
 
-            # Gestione ping/pong applicativo
-            if isinstance(msg, dict) and msg.get("type") == "ping":
-                await ws.send_text(json.dumps({"type": "pong", "ts": now_ms()}))
-                continue
-            if isinstance(msg, dict) and msg.get("type") == "pong":
-                # solo aggiorna lastSeen
+            t = msg.get("type")
+
+            # Client responded to keepalive
+            if t == "pong":
+                last_pong = asyncio.get_event_loop().time()
                 continue
 
-            # Broadcast messaggi applicativi (E2E-agnostico)
-            if isinstance(msg, dict):
-                envelope = {**msg, "from": me["id"], "ts": now_ms()}
-                broadcast(room, envelope, except_ws=ws)
-            else:
-                # Non-JSON → inoltra raw con mittente
-                broadcast(room, json.loads(json.dumps({
-                    "type": "raw",
-                    "from": me["id"],
-                    "payload": data,
-                    "ts": now_ms()
-                })), except_ws=ws)
+            # If client sends ping, reply (no broadcast)
+            if t == "ping":
+                await ws.send_text(json.dumps({"type": "pong"}))
+                continue
+
+            # Do not broadcast presence/pong messages
+            if t in {"presence", "pong"}:
+                continue
+
+            # Relay application messages to others in the room
+            await broadcast(room, data, sender=ws)
 
     except WebSocketDisconnect:
         pass
     finally:
-        ping_task.cancel()
-        wd_task.cancel()
+        task.cancel()
         await leave_room(room, ws)
