@@ -4,10 +4,7 @@ import asyncio
 import json
 
 app = FastAPI()
-rooms: Dict[str, Set[WebSocket]] = {}
-
-PING_INTERVAL = 20  # seconds
-PONG_TIMEOUT = 15   # seconds
+rooms: Dict[str, dict] = {}  # {'peers': set(WebSocket), 'active': set(WebSocket)}
 
 @app.get("/healthz")
 def healthz():
@@ -17,68 +14,40 @@ def healthz():
 async def root():
     return {"status": "ok"}
 
-async def broadcast(room: str, data: str, sender: WebSocket | None = None):
-    peers = rooms.get(room, set())
-    dead = []
-    for ws in peers:
-        if ws is sender:
-            continue
-        try:
-            await ws.send_text(data)
-        except Exception:
-            dead.append(ws)
-    for ws in dead:
-        await leave_room(room, ws)
-
-def presence_payload(room: str) -> str:
-    count = len(rooms.get(room, set()))
-    return json.dumps({"type": "presence", "room": room, "peers": count})
-
-async def enter_room(room: str, ws: WebSocket):
-    peers = rooms.setdefault(room, set())
-    peers.add(ws)
-    # Announce new presence to everyone
-    await broadcast(room, presence_payload(room))
+async def join_room(room: str, ws: WebSocket):
+    await ws.accept()
+    rooms.setdefault(room, set()).add(ws)
 
 async def leave_room(room: str, ws: WebSocket):
     peers = rooms.get(room)
-    if not peers:
-        return
-    peers.discard(ws)
-    # Announce updated presence
-    try:
-        await broadcast(room, presence_payload(room))
-    except Exception:
-        pass
-    if not peers:
-        rooms.pop(room, None)
+    if peers and ws in peers:
+        peers.remove(ws)
+        if not peers:
+            rooms.pop(room, None)
+
+async def broadcast(room: str, msg: str, sender: WebSocket):
+    for peer in list(rooms.get(room, [])):
+        if peer is not sender:
+            try:
+                await peer.send_text(msg)
+            except Exception:
+                await leave_room(room, peer)
 
 @app.websocket("/ws")
-async def ws_endpoint(ws: WebSocket, room: str = Query("test")):
-    await ws.accept()
-    await enter_room(room, ws)
+async def ws_endpoint(ws: WebSocket, room: str = Query("default")):
+    await join_room(room, ws)
+    # benvenuto + keepalive
+    await ws.send_text('{"type":"info","msg":"welcome","room":"%s"}' % room)
 
-    # Per-connection state
-    last_pong = asyncio.get_event_loop().time()
-
-    async def pinger():
-        nonlocal last_pong
+    async def ka():
         while True:
+            await asyncio.sleep(20)
             try:
-                await ws.send_text(json.dumps({"type": "ping"}))
+                await ws.send_text('{"type":"ping"}')
             except Exception:
-                # Connection is dead; cleanup handled below
                 break
-            # Wait and check for pong
-            await asyncio.sleep(PING_INTERVAL)
-            if asyncio.get_event_loop().time() - last_pong > PONG_TIMEOUT + PING_INTERVAL:
-                # Didn't receive pong in time; close
-                try:
-                    await ws.close()
-                finally:
-                    break
 
-    task = asyncio.create_task(pinger())
+    task = asyncio.create_task(ka())
 
     try:
         while True:
@@ -86,27 +55,16 @@ async def ws_endpoint(ws: WebSocket, room: str = Query("test")):
             try:
                 msg = json.loads(data)
             except Exception:
-                # Non-JSON payloads are just relayed
+                # non è JSON → inoltra agli altri com'è
                 await broadcast(room, data, sender=ws)
                 continue
 
-            t = msg.get("type")
-
-            # Client responded to keepalive
-            if t == "pong":
-                last_pong = asyncio.get_event_loop().time()
-                continue
-
-            # If client sends ping, reply (no broadcast)
-            if t == "ping":
+            # Se il client manda ping, rispondi subito con pong e NON fare broadcast
+            if msg.get("type") == "ping":
                 await ws.send_text(json.dumps({"type": "pong"}))
                 continue
 
-            # Do not broadcast presence/pong messages
-            if t in {"presence", "pong"}:
-                continue
-
-            # Relay application messages to others in the room
+            # altrimenti inoltra agli altri peer della stanza
             await broadcast(room, data, sender=ws)
 
     except WebSocketDisconnect:
