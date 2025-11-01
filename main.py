@@ -5,10 +5,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Set
 from datetime import datetime, timezone as tz
 
-from .routes_license import router as license_router
-from .routes_webhooks import router as webhooks_router
-from .db import SessionLocal
-from .models import License, LicenseStatus
+from routes_license import router as license_router
+from routes_webhooks import router as webhooks_router
+from db import SessionLocal
+from models import License, LicenseStatus
 
 app = FastAPI(title="Silent Messaging Backend")
 
