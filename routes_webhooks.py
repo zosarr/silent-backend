@@ -3,8 +3,8 @@ import os, hmac, hashlib
 from fastapi import APIRouter, Request, HTTPException, Depends
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone as tz
-from .db import SessionLocal
-from .models import License, LicenseStatus
+from db import SessionLocal
+from models import License, LicenseStatus
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
@@ -42,3 +42,4 @@ async def payment_webhook(req: Request, db: Session = Depends(get_db)):
 
     # TODO: opzionale -> notificare i WS collegati a install_id che la licenza è PRO
     return {"ok": True}
+
