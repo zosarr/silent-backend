@@ -3,10 +3,10 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone as tz
 from sqlalchemy.orm import Session
-from .db import SessionLocal
-from .models import Base, License, LicenseStatus
+from db import SessionLocal
+from models import Base, License, LicenseStatus
 from sqlalchemy import select
-from .db import engine
+from db import engine
 
 Base.metadata.create_all(bind=engine)
 
@@ -64,3 +64,4 @@ def status(install_id: str, db: Session = Depends(get_db)):
         trial_expires_at=lic.trial_expires_at.isoformat() if lic.status==LicenseStatus.trial else None,
         limits={} if lic.status==LicenseStatus.pro else {"max_text_chars": 1000, "min_send_interval_sec": 5}
     )
+
