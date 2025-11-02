@@ -90,15 +90,28 @@ def dev_reset(install_id: str, db: Session = Depends(get_db)):
 # (trial per test)
 #@router.post("/dev/expire")
 #def dev_expire(install_id: str, db: Session = Depends(get_db)):
-   # if not DEV_RESET_ENABLED:
-   #     raise HTTPException(403, "Disabled")
-   # lic = db.get(License, install_id)
+  # if not DEV_RESET_ENABLED:
+  #     raise HTTPException(403, "Disabled")
+  # lic = db.get(License, install_id)
   #  if not lic:
-    #    raise HTTPException(404, "not found")
-   # from datetime import datetime, timezone, timedelta
-    #lic.trial_expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
-   # db.commit()
-    #return {"ok": True, "trial_expires_at": lic.trial_expires_at.isoformat()}
+  #    raise HTTPException(404, "not found")
+  # from datetime import datetime, timezone, timedelta
+  #lic.trial_expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+  # db.commit()
+  #return {"ok": True, "trial_expires_at": lic.trial_expires_at.isoformat()}
+
+# ( fine trial per test)
+@router.post("/dev/unexpire")
+def dev_unexpire(install_id: str, db: Session = Depends(get_db)):
+    if not DEV_RESET_ENABLED:
+        raise HTTPException(403, "Disabled")
+    from datetime import datetime, timezone, timedelta
+    lic = db.get(License, install_id)
+    if not lic:
+        raise HTTPException(404, "not found")
+    lic.trial_expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    db.commit()
+    return {"ok": True, "trial_expires_at": lic.trial_expires_at.isoformat()}
 
 
 
