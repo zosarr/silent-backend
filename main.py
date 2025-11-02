@@ -114,3 +114,22 @@ async def websocket_endpoint(
 @app.get("/")
 async def root():
     return {"status": "ok", "message": "Silent Backend attivo con licensing"}
+    # main.py (aggiunte in coda ai tuoi import)
+from fastapi import Depends
+from sqlalchemy import text
+from db import SessionLocal, engine
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
+
+@app.get("/readyz")
+def readyz():
+    # ping DB: se fallisce, Render segna unhealthy
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "ready"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
