@@ -100,6 +100,19 @@ def dev_reset(install_id: str, db: Session = Depends(get_db)):
   # db.commit()
   #return {"ok": True, "trial_expires_at": lic.trial_expires_at.isoformat()}
 
+# dalla console F12 incollare questo:
+# prima questo :
+#   fetch('https://silent-backend.onrender.com/license/dev/expire?install_id=' + localStorage.getItem('install_id'), { method:'POST' })
+#  .then(r => r.json())
+#  .then(console.log); 
+
+# secondo questo:
+#   fetch('https://silent-backend.onrender.com/license/status?install_id=' + localStorage.getItem('install_id'))
+#  .then(r => r.json())
+#  .then(console.log);
+
+
+
 # ( fine trial per test)
 @router.post("/dev/unexpire")
 def dev_unexpire(install_id: str, db: Session = Depends(get_db)):
@@ -112,6 +125,13 @@ def dev_unexpire(install_id: str, db: Session = Depends(get_db)):
     lic.trial_expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
     db.commit()
     return {"ok": True, "trial_expires_at": lic.trial_expires_at.isoformat()}
+
+# dalla console F12 incollare questo :
+#   fetch('https://silent-backend.onrender.com/license/dev/unexpire?install_id='+localStorage.getItem('install_id'), { method:'POST' })
+#   .then(r=>r.json()).then(console.log);
+
+
+
 
 
 
