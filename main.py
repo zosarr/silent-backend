@@ -9,7 +9,6 @@ from routes_license import router as license_router
 from routes_webhooks import router as webhooks_router
 from db import SessionLocal
 from models import License, LicenseStatus
-
 app = FastAPI(title="Silent Messaging Backend")
 
 # CORS - consenti al PWA di connettersi
