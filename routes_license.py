@@ -64,4 +64,20 @@ def status(install_id: str, db: Session = Depends(get_db)):
         trial_expires_at=lic.trial_expires_at.isoformat() if lic.status==LicenseStatus.trial else None,
         limits={} if lic.status==LicenseStatus.pro else {"max_text_chars": 1000, "min_send_interval_sec": 5}
     )
+from fastapi import HTTPException
+import os
+
+DEV_RESET_ENABLED = os.getenv("DEV_RESET_ENABLED", "1") == "1"
+
+@router.post("/dev/reset")
+def dev_reset(install_id: str, db: Session = Depends(get_db)):
+    if not DEV_RESET_ENABLED:
+        raise HTTPException(403, "Disabled")
+    lic = db.get(License, install_id)
+    if not lic:
+        raise HTTPException(404, "not found")
+    db.delete(lic)
+    db.commit()
+    return {"ok": True}
+
 
