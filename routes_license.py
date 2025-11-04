@@ -130,6 +130,29 @@ def dev_unexpire(install_id: str, db: Session = Depends(get_db)):
 #   fetch('https://silent-backend.onrender.com/license/dev/unexpire?install_id='+localStorage.getItem('install_id'), { method:'POST' })
 #   .then(r=>r.json()).then(console.log);
 
+from fastapi import Body
+
+@router.post("/activate")
+def activate(install_id: str = Body(...), db: Session = Depends(get_db)):
+    lic = db.get(License, install_id)
+    if not lic:
+        raise HTTPException(404, "install_id not found")
+    lic.status = LicenseStatus.pro
+    lic.pro_activated_at = datetime.now(tz.utc)
+    db.commit()
+    return {"ok": True, "status": lic.status.value}
+
+@router.post("/payment/webhook")
+async def payment_webhook(payload: dict, db: Session = Depends(get_db)):
+    install_id = payload.get("metadata", {}).get("install_id")
+    if not install_id:
+        raise HTTPException(400, "missing install_id")
+    lic = db.get(License, install_id)
+    if lic:
+        lic.status = LicenseStatus.pro
+        lic.pro_activated_at = datetime.now(tz.utc)
+        db.commit()
+    return {"ok": True}
 
 
 
