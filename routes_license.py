@@ -283,5 +283,50 @@ async def payment_webhook(request: Request, db: Session = Depends(get_db)):
 
     return {"ok": True, "install_id": install_id, "status": lic.status.value}
 
+# --- PAYPAL START: crea ordine e restituisce approve_url
+import os, httpx
+PAYPAL_MODE = os.getenv("PAYPAL_MODE", "sandbox").lower()
+PAYPAL_BASE = "https://api-m.sandbox.paypal.com" if PAYPAL_MODE == "sandbox" else "https://api-m.paypal.com"
+PAYPAL_CLIENT_ID = os.getenv("PAYPAL_CLIENT_ID", "")
+PAYPAL_CLIENT_SECRET = os.getenv("PAYPAL_CLIENT_SECRET", "")
+
+async def paypal_access_token() -> str:
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        r = await client.post(
+            f"{PAYPAL_BASE}/v1/oauth2/token",
+            data={"grant_type":"client_credentials"},
+            auth=(PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET),
+            headers={"Accept":"application/json","Accept-Language":"it-IT"},
+        )
+        r.raise_for_status()
+        return r.json()["access_token"]
+
+@router.get("/pay/start")
+async def pay_start(install_id: str):
+    if not install_id:
+        raise HTTPException(400, "missing install_id")
+    token = await paypal_access_token()
+    order_body = {
+        "intent": "CAPTURE",
+        "purchase_units": [{
+            "amount": {"currency_code":"EUR","value":"4.99"},
+            "custom_id": install_id
+        }],
+        "application_context": {"brand_name":"Silent","landing_page":"LOGIN","user_action":"PAY_NOW"}
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(
+            f"{PAYPAL_BASE}/v2/checkout/orders",
+            json=order_body,
+            headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"}
+        )
+    if r.status_code not in (200,201):
+        raise HTTPException(502, f"PayPal create order failed: {r.text}")
+    data = r.json()
+    approve_url = next((l["href"] for l in data.get("links",[]) if l.get("rel")=="approve"), None)
+    if not approve_url:
+        raise HTTPException(502, "approve_url non trovato")
+    return {"approve_url": approve_url, "order_id": data.get("id")}
+
 
 
