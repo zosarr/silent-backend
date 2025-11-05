@@ -12,13 +12,19 @@ from models import License, LicenseStatus
 app = FastAPI(title="Silent Messaging Backend")
 
 # CORS - consenti al PWA di connettersi
+from fastapi.middleware.cors import CORSMiddleware
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://silent-backend.onrender.com",  # dominio PWA su Render
+        "http://localhost:5173",            # se fai test in locale
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # Monta le route per le licenze e i webhook
 app.include_router(license_router)
