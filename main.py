@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://silent-backend.onrender.com",  # dominio PWA su Render
+        "https://silent-pwa.netlify.app",  # dominio PWA su Render
         "http://localhost:5173",            # se fai test in locale
     ],
     allow_credentials=True,
