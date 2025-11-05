@@ -24,7 +24,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
 
 # Monta le route per le licenze e i webhook
 app.include_router(license_router)
