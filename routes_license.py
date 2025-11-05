@@ -7,6 +7,19 @@ import os, logging, httpx
 
 from db import SessionLocal, engine
 from models import Base, License, LicenseStatus
+import os
+from decimal import Decimal, InvalidOperation
+
+LICENSE_CURRENCY = os.getenv("LICENSE_CURRENCY", "EUR").upper()
+LICENSE_PRICE    = os.getenv("LICENSE_PRICE", "4.99")  # stringa
+
+
+def _price_str(v: str) -> str:
+    try:
+        # normalizza a 2 decimali per PayPal
+        return f"{Decimal(v):.2f}"
+    except InvalidOperation:
+        return "4.99"
 
 # --- DB init
 Base.metadata.create_all(bind=engine)
@@ -59,17 +72,21 @@ async def pay_start(install_id: str):
         raise HTTPException(400, "missing install_id")
     token = await paypal_access_token()
     order_body = {
-        "intent": "CAPTURE",
-        "purchase_units": [{
-            "amount": {"currency_code": "EUR", "value": "4.99"},  # <-- modifica importo qui
-            "custom_id": install_id
-        }],
-        "application_context": {
-            "brand_name": "Silent",
-            "landing_page": "LOGIN",
-            "user_action": "PAY_NOW"
-        }
+    "intent": "CAPTURE",
+    "purchase_units": [{
+        "amount": {
+            "currency_code": LICENSE_CURRENCY,
+            "value": _price_str(LICENSE_PRICE),
+        },
+        "custom_id": install_id
+    }],
+    "application_context": {
+        "brand_name": "Silent",
+        "landing_page": "LOGIN",
+        "user_action": "PAY_NOW"
     }
+}
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.post(
             f"{PAYPAL_BASE}/v2/checkout/orders",
@@ -264,6 +281,7 @@ async def payment_webhook(request: Request, db: Session = Depends(get_db)):
         lic.pro_activated_at = now
     db.commit()
     return {"ok": True, "install_id": install_id, "status": "pro"}
+
 
 
 
