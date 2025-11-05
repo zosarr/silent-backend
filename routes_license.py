@@ -183,6 +183,19 @@ def dev_unexpire(install_id: str, db: Session = Depends(get_db)):
     db.commit()
     return {"ok": True, "trial_expires_at": lic.trial_expires_at.isoformat()}
 
+@router.post("/dev/expire")
+def dev_expire(install_id: str, db: Session = Depends(get_db)):
+    if not DEV_RESET_ENABLED:
+        raise HTTPException(403, "Disabled")
+    lic = db.get(License, install_id)
+    if not lic:
+        raise HTTPException(404, "not found")
+    # forza la scadenza portando la trial nel passato
+    lic.trial_expires_at = datetime.now(tz.utc) - timedelta(hours=1)
+    db.commit()
+    return {"ok": True, "trial_expires_at": lic.trial_expires_at.isoformat()}
+
+
 # =========================
 # Attivazione PRO
 # =========================
@@ -245,3 +258,4 @@ async def payment_webhook(request: Request, db: Session = Depends(get_db)):
         lic.pro_activated_at = now
     db.commit()
     return {"ok": True, "install_id": install_id, "status": "pro"}
+
