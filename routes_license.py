@@ -199,6 +199,8 @@ def dev_expire(install_id: str, db: Session = Depends(get_db)):
 # =========================
 # Attivazione PRO
 # =========================
+from fastapi import Body
+
 @router.post("/activate")
 def activate(install_id: str = Body(...), db: Session = Depends(get_db)):
     if not install_id:
@@ -209,11 +211,8 @@ def activate(install_id: str = Body(...), db: Session = Depends(get_db)):
     lic.status = LicenseStatus.pro
     lic.pro_activated_at = datetime.now(tz.utc)
     db.commit()
-    # rileggi per sicurezza
-    lic2 = db.get(License, install_id)
-    if not lic2 or lic2.status != LicenseStatus.pro:
-        raise HTTPException(500, "activate failed to persist")
-    return {"ok": True, "status": lic2.status.value}
+    return {"ok": True, "status": lic.status.value}
+
 
 
 # =========================
@@ -265,5 +264,6 @@ async def payment_webhook(request: Request, db: Session = Depends(get_db)):
         lic.pro_activated_at = now
     db.commit()
     return {"ok": True, "install_id": install_id, "status": "pro"}
+
 
 
