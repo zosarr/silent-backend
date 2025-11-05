@@ -202,7 +202,7 @@ def dev_expire(install_id: str, db: Session = Depends(get_db)):
 from fastapi import Body
 
 @router.post("/activate")
-def activate(install_id: str = Body(...), db: Session = Depends(get_db)):
+def activate(install_id: str = Body(..., embed=True), db: Session = Depends(get_db)):
     if not install_id:
         raise HTTPException(400, "missing install_id")
     lic = db.get(License, install_id)
@@ -264,6 +264,7 @@ async def payment_webhook(request: Request, db: Session = Depends(get_db)):
         lic.pro_activated_at = now
     db.commit()
     return {"ok": True, "install_id": install_id, "status": "pro"}
+
 
 
 
