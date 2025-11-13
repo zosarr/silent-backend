@@ -4,11 +4,21 @@ from pydantic import BaseModel, Field
 from datetime import datetime, timedelta, timezone as tz
 from sqlalchemy.orm import Session
 import os, logging, httpx
+import os, httpx, logging, hmac, hashlib, json
+from fastapi import Request
 
 from db import SessionLocal, engine
 from models import Base, License, LicenseStatus
 import os
 from decimal import Decimal, InvalidOperation
+log = logging.getLogger("btcpay")
+
+BTCPAY_SERVER = os.getenv("BTCPAY_SERVER", "")
+BTCPAY_STORE_ID = os.getenv("BTCPAY_STORE_ID", "")
+BTCPAY_API_KEY = os.getenv("BTCPAY_API_KEY", "")
+BTCPAY_WEBHOOK_SECRET = os.getenv("BTCPAY_WEBHOOK_SECRET", "")
+LICENSE_PRICE_EUR = float(os.getenv("LICENSE_PRICE_EUR", "4.99"))
+
 
 LICENSE_CURRENCY = os.getenv("LICENSE_CURRENCY", "EUR").upper()
 LICENSE_PRICE    = os.getenv("LICENSE_PRICE", "4.99")  # stringa
@@ -281,6 +291,122 @@ async def payment_webhook(request: Request, db: Session = Depends(get_db)):
         lic.pro_activated_at = now
     db.commit()
     return {"ok": True, "install_id": install_id, "status": "pro"}
+
+
+def _price_str(v: float) -> str:
+    return f"{v:.2f}"  # es. 4.99
+
+@router.get("/pay/btcpay/start")
+async def btcpay_start(install_id: str):
+    """
+    Crea un'invoice BTCPay e ritorna la URL di checkout.
+    """
+    if not install_id:
+        raise HTTPException(400, "missing install_id")
+
+    if not (BTCPAY_SERVER and BTCPAY_STORE_ID and BTCPAY_API_KEY):
+        raise HTTPException(500, "BTCPay non configurato (env mancanti)")
+
+    headers = {
+        "Authorization": f"token {BTCPAY_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+    body = {
+        "amount": _price_str(LICENSE_PRICE_EUR),
+        "currency": "EUR",
+        "metadata": {
+            "install_id": install_id
+        },
+        "checkout": {
+            "speedPolicy": "HighSpeed",
+            "redirectAutomatically": True,
+            # dove mandare l'utente dopo il pagamento
+            "redirectURL": "https://silentpwa.com/?paid=1"
+        }
+    }
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        r = await client.post(
+            f"{BTCPAY_SERVER}/api/v1/stores/{BTCPAY_STORE_ID}/invoices",
+            headers=headers,
+            json=body
+        )
+
+    if r.status_code not in (200, 201):
+        log.error("BTCPay invoice failed %s: %s", r.status_code, r.text)
+        raise HTTPException(502, f"BTCPay error {r.status_code}: {r.text}")
+
+    data = r.json()
+    checkout_url = data.get("checkoutLink")
+    if not checkout_url:
+        raise HTTPException(502, "checkoutLink mancante nella risposta BTCPay")
+
+    return {"checkout_url": checkout_url}
+
+@router.post("/payment/btcpay")
+async def btcpay_webhook(request: Request, db: Session = Depends(get_db)):
+    """
+    Webhook chiamato da BTCPay.
+    Quando type == 'InvoiceSettled' e metadata.install_id è presente,
+    la licenza viene promossa a PRO.
+    """
+    if not BTCPAY_WEBHOOK_SECRET:
+        raise HTTPException(500, "BTCPay webhook secret non configurato")
+
+    raw = await request.body()
+    sig_header = request.headers.get("BTCPAY-SIG", "")
+
+    expected = "sha256=" + hmac.new(
+        BTCPAY_WEBHOOK_SECRET.encode("utf-8"),
+        raw,
+        hashlib.sha256
+    ).hexdigest()
+
+    if not hmac.compare_digest(sig_header, expected):
+        log.warning("BTCPay webhook: firma non valida")
+        raise HTTPException(400, "invalid signature")
+
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception:
+        raise HTTPException(400, "invalid json")
+
+    event_type = payload.get("type")
+    metadata = payload.get("metadata") or {}
+    install_id = metadata.get("install_id")
+
+    if not install_id:
+        log.info("Webhook senza install_id, ignorato")
+        return {"ok": True, "ignored": "no install_id"}
+
+    log.info("BTCPay webhook %s per install_id=%s", event_type, install_id)
+
+    # Solo quando l'invoice è realmente saldata
+    if event_type != "InvoiceSettled":
+        return {"ok": True, "ignored": event_type}
+
+    now = datetime.now(tz.utc)
+    lic = db.get(License, install_id)
+
+    if not lic:
+        # crea direttamente PRO se non esiste (opzionale)
+        lic = License(
+            install_id=install_id,
+            status=LicenseStatus.pro,
+            trial_started_at=now,
+            trial_expires_at=now,
+            pro_activated_at=now,
+            limits_profile="demo_default",
+        )
+        db.add(lic)
+    else:
+        lic.status = LicenseStatus.pro
+        lic.pro_activated_at = now
+
+    db.commit()
+    return {"ok": True, "install_id": install_id, "status": lic.status.value}
 
 
 
