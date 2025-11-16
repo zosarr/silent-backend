@@ -1,9 +1,0 @@
-fastapi
-uvicorn
-websockets
-sqlalchemy
-pydantic[email]
-pyjwt
-python-dotenv
-psycopg2-binary
-httpx
