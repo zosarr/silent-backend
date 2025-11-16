@@ -1,8 +1,27 @@
 # silent-backend-main/silent-backend-main/main.py
-
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, Request, Depends
 from typing import Dict, Set
+import asyncio
+import json
+
+import os
+import enum
+import logging
+import hmac
+import hashlib
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+
+import httpx
+from pydantic import BaseSettings, BaseModel
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Enum as SqlEnum
+from sqlalchemy.orm import sessionmaker, declarative_base, Session
+
+app = FastAPI()
+
+
+from fastapi.middleware.cors import CORSMiddleware
+
 from datetime import datetime, timezone as tz
 
 from .routes_license import router as license_router
@@ -10,7 +29,7 @@ from .routes_webhooks import router as webhooks_router
 from .db import SessionLocal
 from .models import License, LicenseStatus
 
-app = FastAPI(title="Silent Messaging Backend")
+
 
 # CORS - consenti al PWA di connettersi
 app.add_middleware(
