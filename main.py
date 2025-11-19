@@ -1,10 +1,7 @@
-# silent-backend-main/silent-backend-main/main.py
-from fastapi import Depends, WebSocket, WebSocketDisconnect, Query, HTTPException, Request, Depends
-from typing import Dict, Set
-from pydantic import BaseSettings, BaseModel
-import asyncio
-import json
 
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Depends, HTTPException, Request
+from typing import Dict, Set
+import asyncio
 import json
 import os
 import enum
@@ -16,139 +13,136 @@ from decimal import Decimal
 
 import httpx
 from pydantic import BaseSettings, BaseModel
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Enum as SqlEnum
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Enum as SqlEnum, text
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 
 app = FastAPI()
 
+# =========================
+#  WEBSOCKET CHAT ROOMS
+# =========================
 
-from fastapi.middleware.cors import CORSMiddleware
-
-from datetime import datetime, timezone as tz
-
-from .routes_license import router as license_router
-from .routes_webhooks import router as webhooks_router
-from .db import SessionLocal
-from .models import License, LicenseStatus
-
-
-
-# CORS - consenti al PWA di connettersi
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Monta le route per le licenze e i webhook
-app.include_router(license_router)
-app.include_router(webhooks_router)
-
-# Stanze per i WebSocket
 rooms: Dict[str, Set[WebSocket]] = {}
-by_install: Dict[str, Set[WebSocket]] = {}
+
+PING_INTERVAL = 20  # seconds
+PONG_TIMEOUT = 15   # seconds
 
 
-def register_ws(install_id: str, ws: WebSocket):
-    by_install.setdefault(install_id, set()).add(ws)
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
 
 
-def unregister_ws(install_id: str, ws: WebSocket):
-    s = by_install.get(install_id)
-    if s and ws in s:
-        s.remove(ws)
+@app.get("/")
+def root():
+    return {"status": "ok", "message": "Silent Backend attivo con licensing e BTCPay"}
 
 
-async def broadcast(room: str, message: str, sender: WebSocket):
-    if room not in rooms:
+async def join_room(room: str, websocket: WebSocket):
+    peers = rooms.setdefault(room, set())
+    peers.add(websocket)
+
+
+async def leave_room(room: str, websocket: WebSocket):
+    peers = rooms.get(room)
+    if not peers:
         return
-    dead = set()
-    for conn in rooms[room]:
-        if conn is sender:
+    if websocket in peers:
+        peers.remove(websocket)
+    if not peers:
+        rooms.pop(room, None)
+
+
+async def broadcast(room: str, message: str, sender: WebSocket | None = None):
+    peers = rooms.get(room, set())
+    dead = []
+    for ws in peers:
+        if sender is not None and ws is sender:
             continue
         try:
-            await conn.send_text(message)
+            await ws.send_text(message)
         except Exception:
-            dead.add(conn)
-    rooms[room] -= dead
+            dead.append(ws)
+    for ws in dead:
+        await leave_room(room, ws)
 
 
-@app.websocket("/ws")
-async def websocket_endpoint(
-    websocket: WebSocket,
-    room: str = Query(...),
-    install_id: str = Query(...)
-):
+def presence_payload(room: str) -> str:
+    count = len(rooms.get(room, set()))
+    return json.dumps({"type": "presence", "count": count})
+
+
+async def keepalive_task(room: str, websocket: WebSocket):
+    last_pong = asyncio.get_event_loop().time()
+
+    while True:
+        await asyncio.sleep(PING_INTERVAL)
+
+        # send ping
+        try:
+            await websocket.send_text(json.dumps({"type": "ping"}))
+        except Exception:
+            break
+
+        # check pong timeout
+        now = asyncio.get_event_loop().time()
+        if now - last_pong > PONG_TIMEOUT:
+            # consider dead
+            break
+
+
+@app.websocket("/ws/{room}")
+async def websocket_endpoint(websocket: WebSocket, room: str, token: str = Query(None)):
     await websocket.accept()
-    websocket.state.install_id = install_id
 
-    # Recupera la licenza
-    db = SessionLocal()
-    lic = db.get(License, install_id)
-    db.close()
+    await join_room(room, websocket)
+    # notify presence
+    await broadcast(room, presence_payload(room), sender=None)
 
-    # Imposta stato di default se non trovata
-    license_status = lic.status.value if lic else "trial"
-    websocket.state.license_status = license_status
-    websocket.state.trial_expires_at = (
-        lic.trial_expires_at if lic else datetime.now(tz.utc)
-    )
-
-    # Registra connessione
-    register_ws(install_id, websocket)
-    rooms.setdefault(room, set()).add(websocket)
-
-    print(f"🟢 WS aperto: room={room}, install_id={install_id}, status={license_status}")
+    task = asyncio.create_task(keepalive_task(room, websocket))
 
     try:
         while True:
             data = await websocket.receive_text()
 
-            # --- Enforcement base Trial/Demo ---
-            now = datetime.now(tz.utc)
-            if websocket.state.license_status != "pro":
-                # Trial scaduta → blocco
-                if websocket.state.trial_expires_at <= now:
-                    await websocket.send_text(
-                        '{"type":"license_expired","msg":"Trial expired"}'
-                    )
-                    continue  # ignora i messaggi utente
+            try:
+                msg = json.loads(data)
+            except json.JSONDecodeError:
+                # non json → broadcast raw
+                await broadcast(room, data, sender=websocket)
+                continue
 
-            # --- Broadcast normale ---
-            await broadcast(room, data, websocket)
+            t = msg.get("type")
+
+            # client responds to keepalive
+            if t == "pong":
+                # just ignore here, keepalive_task checks time
+                continue
+
+            # if client sends ping
+            if t == "ping":
+                await websocket.send_text(json.dumps({"type": "pong"}))
+                continue
+
+            # do not broadcast presence/pong
+            if t in {"presence", "pong"}:
+                continue
+
+            # normal app message → broadcast
+            await broadcast(room, data, sender=websocket)
 
     except WebSocketDisconnect:
-        rooms[room].remove(websocket)
-        unregister_ws(install_id, websocket)
-        print(f"🔴 WS chiuso: room={room}, install_id={install_id}")
-    except Exception as e:
-        print("⚠️ WS error:", e)
-        try:
-            await websocket.close()
-        except Exception:
-            pass
-        rooms[room].discard(websocket)
-        unregister_ws(install_id, websocket)
+        pass
+    finally:
+        task.cancel()
+        await leave_room(room, websocket)
+        # update presence
+        await broadcast(room, presence_payload(room), sender=None)
 
-@app.get("/")
-async def root():
-    return {"status": "ok", "message": "Silent Backend attivo con licensing"}
 
 # =========================
 # Licenze + Pagamenti BTCPay
 # =========================
-
-# =========================
-# Licenze + Pagamenti BTCPay
-# =========================
-
-import hmac
-import hashlib
-import httpx
-from decimal import Decimal
-from fastapi import Request, HTTPException
 
 logger = logging.getLogger("silent-licenses")
 logging.basicConfig(level=logging.INFO)
@@ -183,76 +177,233 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
-# ============================================================
-#                  ENDPOINT: CREA INVOICE BTCPAY
-# ============================================================
-@app.post("/license/pay/btcpay/start")
-async def btcpay_start(data: dict):
-    install_id = data.get("install_id")
+class LicenseStatus(str, enum.Enum):
+    TRIAL = "trial"
+    DEMO = "demo"
+    PRO = "pro"
+
+
+class License(Base):
+    __tablename__ = "licenses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    install_id = Column(String, unique=True, index=True, nullable=False)
+
+    status = Column(SqlEnum(LicenseStatus), nullable=False, default=LicenseStatus.TRIAL)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    activated_at = Column(DateTime(timezone=True), nullable=True)
+
+    last_invoice_id = Column(String, nullable=True)
+
+
+Base.metadata.create_all(bind=engine)
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def get_or_create_license(db: Session, install_id: str) -> License:
+    lic = db.query(License).filter(License.install_id == install_id).first()
+    if not lic:
+        lic = License(
+            install_id=install_id,
+            status=LicenseStatus.TRIAL,
+            created_at=datetime.now(timezone.utc),
+        )
+        db.add(lic)
+        db.commit()
+        db.refresh(lic)
+        logger.info("Creata nuova licenza TRIAL per install_id=%s", install_id)
+    return lic
+
+
+def compute_effective_status(lic: License) -> LicenseStatus:
+    if lic.status == LicenseStatus.PRO:
+        return LicenseStatus.PRO
+
+    now = datetime.now(timezone.utc)
+    delta = now - lic.created_at
+    if delta > timedelta(hours=settings.trial_hours):
+        if lic.status != LicenseStatus.DEMO:
+            lic.status = LicenseStatus.DEMO
+        return LicenseStatus.DEMO
+
+    return LicenseStatus.TRIAL
+
+
+class LicenseStatusResponse(BaseModel):
+    status: str
+    trial_hours_total: int
+    trial_hours_left: float
+    created_at: datetime | None = None
+    activated_at: datetime | None = None
+
+
+class StartPaymentRequest(BaseModel):
+    install_id: str
+
+
+def verify_btcpay_signature(raw_body: bytes, sig_header: str | None, secret: str) -> bool:
+    if not sig_header or not secret:
+        return False
+    try:
+        algo, provided_sig = sig_header.split("=", 1)
+    except ValueError:
+        return False
+    if algo != "sha256":
+        return False
+    digest = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(digest, provided_sig)
+
+
+@app.get("/license/status", response_model=LicenseStatusResponse)
+def license_status(install_id: str, db: Session = Depends(get_db)):
     if not install_id:
-        raise HTTPException(status_code=400, detail="missing install_id")
+        raise HTTPException(status_code=400, detail="install_id mancante")
 
-    amount = settings.license_price_eur
+    lic = get_or_create_license(db, install_id)
+    effective = compute_effective_status(lic)
+    db.commit()  # salva eventuale TRIAL -> DEMO
 
-    url = f"{settings.btcpay_server}/api/v1/stores/{settings.btcpay_store_id}/invoices"
+    trial_hours_total = settings.trial_hours
+    now = datetime.now(timezone.utc)
+    if effective == LicenseStatus.TRIAL:
+        expires_at = lic.created_at + timedelta(hours=trial_hours_total)
+        trial_hours_left = max(0.0, (expires_at - now).total_seconds() / 3600.0)
+    else:
+        trial_hours_left = 0.0
 
+    return LicenseStatusResponse(
+        status=effective.value,
+        trial_hours_total=trial_hours_total,
+        trial_hours_left=trial_hours_left,
+        created_at=lic.created_at,
+        activated_at=lic.activated_at,
+    )
+
+
+@app.post("/license/pay/btcpay/start")
+async def start_btcpay_payment(
+    payload: StartPaymentRequest,
+    db: Session = Depends(get_db),
+):
+    install_id = payload.install_id.strip()
+    if not install_id:
+        raise HTTPException(status_code=400, detail="install_id mancante")
+
+    if not (settings.btcpay_server and settings.btcpay_store_id and settings.btcpay_api_key):
+        logger.error("BTCPay non configurato correttamente")
+        raise HTTPException(status_code=500, detail="BTCPay non configurato")
+
+    lic = get_or_create_license(db, install_id)
+
+    invoice_body = {
+        "amount": str(settings.license_price_eur),
+        "currency": "EUR",
+        "metadata": {
+            "install_id": install_id,
+        },
+    }
+
+    url = f"{settings.btcpay_server.rstrip('/')}/api/v1/stores/{settings.btcpay_store_id}/invoices"
     headers = {
-        "Authorization": f"token {settings.btcpay_api_key}",
+        "Authorization": f"Token {settings.btcpay_api_key}",
         "Content-Type": "application/json",
     }
 
-    payload = {
-        "amount": float(amount),
-        "currency": "EUR",
-        "metadata": {"install_id": install_id},
-        "checkout": {"redirectURL": "https://silentpwa.com"},
-    }
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json=invoice_body, headers=headers)
+    except Exception as e:
+        logger.exception("Errore chiamata BTCPay: %s", e)
+        raise HTTPException(status_code=502, detail="Errore di comunicazione con BTCPay")
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(url, json=payload, headers=headers)
+    if resp.status_code >= 400:
+        logger.error(
+            "BTCPay create invoice fallita: status=%s body=%s",
+            resp.status_code,
+            resp.text,
+        )
+        raise HTTPException(status_code=502, detail="Errore creazione invoice BTCPay")
 
-    if resp.status_code != 200:
-        logger.error(f"Errore creazione invoice BTCPay: {resp.text}")
-        raise HTTPException(status_code=500, detail="BTCPay error")
+    data = resp.json()
+    invoice_id = data.get("id")
+    checkout_url = data.get("checkoutLink") or data.get("checkoutUrl")
 
-    invoice = resp.json()
-    checkout_url = invoice.get("checkoutLink")
+    if not checkout_url:
+        logger.error("Risposta BTCPay senza checkout url: %s", data)
+        raise HTTPException(status_code=502, detail="Risposta BTCPay non valida")
+
+    lic.last_invoice_id = invoice_id
+    db.commit()
+
+    logger.info("Creata invoice BTCPay invoice_id=%s per install_id=%s", invoice_id, install_id)
 
     return {"status": "ok", "checkout_url": checkout_url}
 
 
-# ============================================================
-#             ENDPOINT: WEBHOOK BTCPAY (pagamento)
-# ============================================================
 @app.post("/license/payment/btcpay")
-async def btcpay_webhook(request: Request):
-    body = await request.body()
-    signature = request.headers.get("BTCPay-Sig")
+async def btcpay_webhook(request: Request, db: Session = Depends(get_db)):
+    raw = await request.body()
+    sig_header = (
+        request.headers.get("BTCPAY-SIG")
+        or request.headers.get("Btcpay-Sig")
+        or request.headers.get("btcpay-sig")
+    )
 
-    if not signature:
-        raise HTTPException(status_code=400, detail="missing signature")
+    if not verify_btcpay_signature(raw, sig_header, settings.btcpay_webhook_secret):
+        logger.warning("Webhook BTCPay con firma non valida")
+        raise HTTPException(status_code=400, detail="Invalid signature")
 
-    secret = settings.btcpay_webhook_secret.encode()
-    computed = "sha256=" + hmac.new(secret, body, hashlib.sha256).hexdigest()
+    payload = json.loads(raw.decode("utf-8"))
 
-    if not hmac.compare_digest(computed, signature):
-        raise HTTPException(status_code=400, detail="invalid signature")
+    event_type = payload.get("type")
+    if event_type != "InvoiceSettled":
+        logger.info("Webhook BTCPay ignorato: type=%s", event_type)
+        return {"status": "ignored"}
 
-    payload = await request.json()
-    event = payload.get("type")
-    invoice = payload.get("invoice", {})
-    metadata = invoice.get("metadata", {})
+    metadata = payload.get("metadata") or {}
     install_id = metadata.get("install_id")
 
-    if event == "InvoiceSettled" and install_id:
-        db = SessionLocal()
+    if not install_id:
+        invoice_id = payload.get("invoiceId")
+        if invoice_id:
+            lic = db.query(License).filter(License.last_invoice_id == invoice_id).first()
+        else:
+            lic = None
+    else:
         lic = db.query(License).filter(License.install_id == install_id).first()
 
-        if lic:
-            lic.status = "pro"
-            lic.activated_at = datetime.utcnow()
-            db.commit()
-            logger.info(f"Licenza attivata per install_id={install_id}")
-        db.close()
+    if not lic:
+        logger.error("Licenza non trovata per webhook BTCPay install_id=%s payload=%s", install_id, payload)
+        return {"status": "license_not_found"}
+
+    if lic.status != LicenseStatus.PRO:
+        lic.status = LicenseStatus.PRO
+        lic.activated_at = datetime.now(timezone.utc)
+        db.commit()
+        logger.info("Licenza PRO attivata per install_id=%s", lic.install_id)
+    else:
+        logger.info("Webhook BTCPay duplicato per install_id=%s, licenza già PRO", lic.install_id)
 
     return {"status": "ok"}
+
+
+@app.get("/readyz")
+def readyz():
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "ready"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
