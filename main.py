@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Depends, HTTPException, Request
 from typing import Dict, Set
 import asyncio
@@ -24,8 +23,8 @@ app = FastAPI()
 
 rooms: Dict[str, Set[WebSocket]] = {}
 
-PING_INTERVAL = 20  # seconds
-PONG_TIMEOUT = 15   # seconds
+PING_INTERVAL = 20
+PONG_TIMEOUT = 15
 
 
 @app.get("/healthz")
@@ -78,16 +77,13 @@ async def keepalive_task(room: str, websocket: WebSocket):
     while True:
         await asyncio.sleep(PING_INTERVAL)
 
-        # send ping
         try:
             await websocket.send_text(json.dumps({"type": "ping"}))
         except Exception:
             break
 
-        # check pong timeout
         now = asyncio.get_event_loop().time()
         if now - last_pong > PONG_TIMEOUT:
-            # consider dead
             break
 
 
@@ -96,7 +92,6 @@ async def websocket_endpoint(websocket: WebSocket, room: str, token: str = Query
     await websocket.accept()
 
     await join_room(room, websocket)
-    # notify presence
     await broadcast(room, presence_payload(room), sender=None)
 
     task = asyncio.create_task(keepalive_task(room, websocket))
@@ -108,27 +103,21 @@ async def websocket_endpoint(websocket: WebSocket, room: str, token: str = Query
             try:
                 msg = json.loads(data)
             except json.JSONDecodeError:
-                # non json → broadcast raw
                 await broadcast(room, data, sender=websocket)
                 continue
 
             t = msg.get("type")
 
-            # client responds to keepalive
             if t == "pong":
-                # just ignore here, keepalive_task checks time
                 continue
 
-            # if client sends ping
             if t == "ping":
                 await websocket.send_text(json.dumps({"type": "pong"}))
                 continue
 
-            # do not broadcast presence/pong
             if t in {"presence", "pong"}:
                 continue
 
-            # normal app message → broadcast
             await broadcast(room, data, sender=websocket)
 
     except WebSocketDisconnect:
@@ -136,7 +125,6 @@ async def websocket_endpoint(websocket: WebSocket, room: str, token: str = Query
     finally:
         task.cancel()
         await leave_room(room, websocket)
-        # update presence
         await broadcast(room, presence_payload(room), sender=None)
 
 
@@ -166,7 +154,6 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# --- SQLAlchemy setup ---
 engine = create_engine(
     settings.database_url,
     connect_args={"check_same_thread": False}
@@ -190,11 +177,7 @@ class License(Base):
     install_id = Column(String, unique=True, index=True, nullable=False)
 
     status = Column(SqlEnum(LicenseStatus), nullable=False, default=LicenseStatus.TRIAL)
-    created_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-    )
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     activated_at = Column(DateTime(timezone=True), nullable=True)
 
     last_invoice_id = Column(String, nullable=True)
@@ -272,7 +255,7 @@ def license_status(install_id: str, db: Session = Depends(get_db)):
 
     lic = get_or_create_license(db, install_id)
     effective = compute_effective_status(lic)
-    db.commit()  # salva eventuale TRIAL -> DEMO
+    db.commit()
 
     trial_hours_total = settings.trial_hours
     now = datetime.now(timezone.utc)
@@ -292,10 +275,7 @@ def license_status(install_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/license/pay/btcpay/start")
-async def start_btcpay_payment(
-    payload: StartPaymentRequest,
-    db: Session = Depends(get_db),
-):
+async def start_btcpay_payment(payload: StartPaymentRequest, db: Session = Depends(get_db)):
     install_id = payload.install_id.strip()
     if not install_id:
         raise HTTPException(status_code=400, detail="install_id mancante")
@@ -406,4 +386,3 @@ def readyz():
         return {"status": "ready"}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
-
