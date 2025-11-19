@@ -11,7 +11,9 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import httpx
-from pydantic import BaseSettings, BaseModel
+from pydantic_settings import BaseSettings
+from pydantic import BaseModel
+
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Enum as SqlEnum, text
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 
