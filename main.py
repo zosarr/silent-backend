@@ -273,9 +273,11 @@ def license_status(install_id: str, db: Session = Depends(get_db)):
         activated_at=lic.activated_at,
     )
 
-
 @app.post("/license/pay/btcpay/start")
-async def start_btcpay_payment(payload: StartPaymentRequest, db: Session = Depends(get_db)):
+async def start_btcpay_payment(
+    payload: StartPaymentRequest,
+    db: Session = Depends(get_db),
+):
     install_id = payload.install_id.strip()
     if not install_id:
         raise HTTPException(status_code=400, detail="install_id mancante")
@@ -329,6 +331,8 @@ async def start_btcpay_payment(payload: StartPaymentRequest, db: Session = Depen
     logger.info("Creata invoice BTCPay invoice_id=%s per install_id=%s", invoice_id, install_id)
 
     return {"status": "ok", "checkout_url": checkout_url}
+
+
 
 
 @app.post("/license/payment/btcpay")
