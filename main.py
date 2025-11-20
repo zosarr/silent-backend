@@ -9,7 +9,7 @@ import hmac
 import hashlib
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-
+from config import settings
 import httpx
 from pydantic_settings import BaseSettings
 from pydantic import BaseModel
