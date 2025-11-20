@@ -1,21 +1,35 @@
-# silent-backend-main/silent-backend-main/models.py
-from sqlalchemy import Column, String, DateTime, Enum
+# models.py – versione compatibile con main.py + Coinbase Commerce
+
+from sqlalchemy import Column, Integer, String, DateTime, Enum
 from sqlalchemy.orm import declarative_base
 import enum
+from datetime import datetime, timezone
+
 
 Base = declarative_base()
 
+
 class LicenseStatus(str, enum.Enum):
-    trial = "trial"
-    pro = "pro"
-    blocked = "blocked"
+    TRIAL = "trial"
+    DEMO = "demo"
+    PRO = "pro"
+
 
 class License(Base):
     __tablename__ = "licenses"
-    install_id = Column(String, primary_key=True, index=True)
-    status = Column(Enum(LicenseStatus), nullable=False)
-    trial_started_at = Column(DateTime, nullable=False)
-    trial_expires_at = Column(DateTime, nullable=False)
-    pro_activated_at = Column(DateTime, nullable=True)
-    last_seen_at = Column(DateTime, nullable=True)
-    limits_profile = Column(String, nullable=True)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    install_id = Column(String, unique=True, index=True, nullable=False)
+
+    status = Column(Enum(LicenseStatus), nullable=False, default=LicenseStatus.TRIAL)
+
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc)
+    )
+
+    activated_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Per Coinbase Commerce
+    last_invoice_id = Column(String, nullable=True)
