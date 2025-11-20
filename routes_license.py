@@ -4,9 +4,10 @@ from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
-from .db import SessionLocal, engine
-from .models import Base, License, LicenseStatus
-from .config import settings  # SE hai Settings altrove, aggiorna il path
+from db import SessionLocal, engine
+from models import Base, License, LicenseStatus
+from config import settings   # solo se esiste config.py
+
 
 Base.metadata.create_all(bind=engine)
 
@@ -127,3 +128,4 @@ def status(install_id: str, db: Session = Depends(get_db)):
         created_at=lic.created_at,
         activated_at=lic.activated_at,
     )
+
