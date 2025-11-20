@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from db import SessionLocal, engine
 from models import Base, License, LicenseStatus
-from config import settings   # solo se esiste config.py
+from main import settings   # ✅ CORRETTO
 
 
 Base.metadata.create_all(bind=engine)
@@ -34,19 +34,14 @@ class LicenseStatusResponse(BaseModel):
     activated_at: datetime | None = None
 
 
-# ---------------------------------------------------------
-# 📌 TRIAL + STATUS SYSTEM (compatile con main.py)
-# ---------------------------------------------------------
-
 def compute_effective_status(lic: License) -> LicenseStatus:
     if lic.status == LicenseStatus.PRO:
         return LicenseStatus.PRO
 
     now = datetime.now(timezone.utc)
-
     elapsed = now - lic.created_at
+
     if elapsed > timedelta(hours=settings.trial_hours):
-        # scaduta → DEMO
         if lic.status != LicenseStatus.DEMO:
             lic.status = LicenseStatus.DEMO
         return LicenseStatus.DEMO
@@ -67,10 +62,6 @@ def get_or_create_license(db: Session, install_id: str) -> License:
         db.refresh(lic)
     return lic
 
-
-# ---------------------------------------------------------
-# 📌 ENDPOINT: REGISTER
-# ---------------------------------------------------------
 
 @router.post("/register", response_model=LicenseStatusResponse)
 def register(body: RegisterRequest, db: Session = Depends(get_db)):
@@ -98,10 +89,6 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
     )
 
 
-# ---------------------------------------------------------
-# 📌 ENDPOINT: STATUS
-# ---------------------------------------------------------
-
 @router.get("/status", response_model=LicenseStatusResponse)
 def status(install_id: str, db: Session = Depends(get_db)):
     if not install_id:
@@ -128,4 +115,3 @@ def status(install_id: str, db: Session = Depends(get_db)):
         created_at=lic.created_at,
         activated_at=lic.activated_at,
     )
-
