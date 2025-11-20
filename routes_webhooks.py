@@ -1,20 +1,19 @@
-# routes_webhooks.py - Versione compatibile con Coinbase Commerce
-import os
+# routes_webhooks.py - VERSIONE CORRETTA PER COINBASE + main.py
+
+import json
 import hmac
 import hashlib
-import json
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Request, HTTPException, Depends
 from sqlalchemy.orm import Session
-from datetime import datetime, timezone
-from main import settings
 
 from db import SessionLocal
 from models import License, LicenseStatus
+from main import settings   # ✅ settings arriva da main.py
+
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
-
-# Secret Coinbase Commerce
-WEBHOOK_SECRET = os.getenv("COINBASE_WEBHOOK_SECRET")
 
 
 def get_db():
@@ -25,61 +24,58 @@ def get_db():
         db.close()
 
 
-def verify_coinbase_signature(raw_body: bytes, signature: str, secret: str) -> bool:
-    """Verifica firma Coinbase Commerce (HMAC-SHA256)."""
+# --------------------------------------------------------------
+#   VERIFICA FIRMA COINBASE (HMAC SHA256)
+# --------------------------------------------------------------
+def verify_coinbase_signature(raw: bytes, signature: str, secret: str) -> bool:
     if not signature or not secret:
         return False
 
-    try:
-        computed = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
-        return hmac.compare_digest(computed, signature)
-    except Exception:
-        return False
+    computed = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(computed, signature)
 
 
-@router.post("/coinbase")
+# --------------------------------------------------------------
+#   WEBHOOK PAYMENT COINBASE
+# --------------------------------------------------------------
+@router.post("/payment/coinbase")
 async def coinbase_webhook(request: Request, db: Session = Depends(get_db)):
-    """
-    Webhook Coinbase Commerce
-    Eventi accettati:
-      - charge:confirmed
-      - charge:resolved
-    """
     raw = await request.body()
+
     signature = request.headers.get("X-Cc-Webhook-Signature")
+    secret = settings.coinbase_webhook_secret
 
-    if not verify_coinbase_signature(raw, signature, WEBHOOK_SECRET):
-        raise HTTPException(status_code=400, detail="Invalid signature")
+    if not verify_coinbase_signature(raw, signature, secret):
+        raise HTTPException(400, "Invalid signature")
 
-    payload = json.loads(raw.decode("utf-8"))
-
+    payload = json.loads(raw)
     event = payload.get("event", {})
-    event_type = event.get("type", "")
+    event_type = event.get("type")
+
+    # Ignora eventi non importanti
+    if event_type not in ["charge:confirmed", "charge:resolved"]:
+        return {"status": "ignored"}
+
     charge_data = event.get("data", {})
     metadata = charge_data.get("metadata", {})
 
-    # Coinbase invia anche "id" utile in fallback
-    charge_id = charge_data.get("id")
     install_id = metadata.get("install_id")
+    charge_id = charge_data.get("id")
 
-    # Eventi validi
-    if event_type not in ("charge:confirmed", "charge:resolved"):
-        return {"status": "ignored"}
-
-    # Troviamo la licenza:
+    # Cerca licenza tramite install_id
+    lic = None
     if install_id:
         lic = db.query(License).filter(License.install_id == install_id).first()
     else:
+        # fallback: cerca via invoice id
         lic = db.query(License).filter(License.last_invoice_id == charge_id).first()
 
     if not lic:
-        raise HTTPException(404, "License not found")
+        return {"status": "license_not_found"}
 
-    # Attiviamo licenza PRO
+    # Attiva PRO
     lic.status = LicenseStatus.PRO
     lic.activated_at = datetime.now(timezone.utc)
     db.commit()
 
     return {"status": "ok"}
-
-
