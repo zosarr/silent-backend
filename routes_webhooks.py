@@ -6,6 +6,7 @@ import json
 from fastapi import APIRouter, Request, HTTPException, Depends
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
+from main import settings
 
 from db import SessionLocal
 from models import License, LicenseStatus
@@ -80,4 +81,5 @@ async def coinbase_webhook(request: Request, db: Session = Depends(get_db)):
     db.commit()
 
     return {"status": "ok"}
+
 
