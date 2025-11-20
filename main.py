@@ -17,6 +17,13 @@ from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Enum as SqlEnum, text
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 
+from routes_license import router as license_router
+from routes_webhooks import router as webhooks_router
+
+app.include_router(license_router)
+app.include_router(webhooks_router)
+
+
 app = FastAPI()
 
 # ============================================================
