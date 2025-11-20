@@ -7,6 +7,10 @@ import enum
 import logging
 import hmac
 import hashlib
+import base64
+import hmac
+import hashlib
+
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -392,3 +396,109 @@ def readyz():
         return {"status": "ready"}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
+
+class CoinbaseStartRequest(BaseModel):
+    install_id: str
+
+
+def verify_coinbase_signature(raw_body: bytes, signature: str, secret: str) -> bool:
+    if not signature or not secret:
+        return False
+    try:
+        computed = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(computed, signature)
+    except Exception:
+        return False
+
+
+@app.post("/license/pay/coinbase/start")
+async def start_coinbase_payment(payload: CoinbaseStartRequest, db: Session = Depends(get_db)):
+
+    install_id = payload.install_id.strip()
+    if not install_id:
+        raise HTTPException(400, "install_id mancante")
+
+    api_key = os.getenv("COINBASE_API_KEY")
+    api_url = os.getenv("COINBASE_API_URL", "https://api.commerce.coinbase.com")
+
+    if not api_key:
+        raise HTTPException(500, "Coinbase Commerce non configurato")
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-CC-Api-Key": api_key,
+        "X-CC-Version": "2018-03-22",
+    }
+
+    body = {
+        "name": "Silent PRO License",
+        "description": "Licenza Silent PRO",
+        "local_price": {
+            "amount": str(settings.license_price_eur),
+            "currency": "EUR"
+        },
+        "pricing_type": "fixed_price",
+        "metadata": {
+            "install_id": install_id
+        }
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(f"{api_url}/charges", json=body, headers=headers)
+    except Exception as e:
+        logger.error("Coinbase communication error: %s", e)
+        raise HTTPException(502, "Errore comunicazione Coinbase")
+
+    if resp.status_code >= 400:
+        logger.error("Coinbase API error: %s", resp.text)
+        raise HTTPException(502, "Errore creazione payment Coinbase")
+
+    data = resp.json()
+    charge = data["data"]
+
+    checkout_url = charge["hosted_url"]
+    charge_id = charge["id"]
+
+    lic = get_or_create_license(db, install_id)
+    lic.last_invoice_id = charge_id
+    db.commit()
+
+    return {"status": "ok", "checkout_url": checkout_url}
+    @app.post("/license/payment/coinbase")
+async def coinbase_webhook(request: Request, db: Session = Depends(get_db)):
+    raw = await request.body()
+    sig = request.headers.get("X-Cc-Webhook-Signature")
+    secret = os.getenv("COINBASE_WEBHOOK_SECRET")
+
+    if not verify_coinbase_signature(raw, sig, secret):
+        logger.warning("Coinbase webhook firma non valida")
+        raise HTTPException(400, "Invalid signature")
+
+    payload = json.loads(raw.decode("utf-8"))
+    event_type = payload.get("event", {}).get("type")
+    charge = payload.get("event", {}).get("data", {})
+    metadata = charge.get("metadata", {})
+
+    if event_type not in ["charge:confirmed", "charge:resolved"]:
+        return {"status": "ignored"}
+
+    install_id = metadata.get("install_id")
+    charge_id = charge.get("id")
+
+    if install_id:
+        lic = db.query(License).filter(License.install_id == install_id).first()
+    else:
+        lic = db.query(License).filter(License.last_invoice_id == charge_id).first()
+
+    if not lic:
+        logger.error("Licenza non trovata per webhook Coinbase")
+        return {"status": "license_not_found"}
+
+    lic.status = LicenseStatus.PRO
+    lic.activated_at = datetime.now(timezone.utc)
+    db.commit()
+
+    return {"status": "ok"}
+
+
