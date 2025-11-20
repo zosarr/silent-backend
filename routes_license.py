@@ -1,12 +1,12 @@
-# routes_license.py (versione compatibile con Coinbase & main.py)
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
 
 from db import SessionLocal, engine
 from models import Base, License, LicenseStatus
-from main import settings   # ✅ CORRETTO
+from config import settings
+
 
 
 Base.metadata.create_all(bind=engine)
@@ -115,3 +115,4 @@ def status(install_id: str, db: Session = Depends(get_db)):
         created_at=lic.created_at,
         activated_at=lic.activated_at,
     )
+
