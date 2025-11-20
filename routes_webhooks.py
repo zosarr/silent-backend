@@ -1,14 +1,20 @@
-# silent-backend-main/silent-backend-main/routes_webhooks.py
-import os, hmac, hashlib
+# routes_webhooks.py - Versione compatibile con Coinbase Commerce
+import os
+import hmac
+import hashlib
+import json
 from fastapi import APIRouter, Request, HTTPException, Depends
 from sqlalchemy.orm import Session
-from datetime import datetime, timezone as tz
+from datetime import datetime, timezone
+
 from .db import SessionLocal
 from .models import License, LicenseStatus
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "dev-secret")
+# Secret Coinbase Commerce
+WEBHOOK_SECRET = os.getenv("COINBASE_WEBHOOK_SECRET")
+
 
 def get_db():
     db = SessionLocal()
@@ -17,28 +23,60 @@ def get_db():
     finally:
         db.close()
 
-@router.post("/payment")
-async def payment_webhook(req: Request, db: Session = Depends(get_db)):
-    # Esempio generico con HMAC nell’header X-Signature
-    raw = await req.body()
-    sig = req.headers.get("X-Signature")
-    mac = hmac.new(WEBHOOK_SECRET.encode(), raw, hashlib.sha256).hexdigest()
-    if not sig or not hmac.compare_digest(sig, mac):
+
+def verify_coinbase_signature(raw_body: bytes, signature: str, secret: str) -> bool:
+    """Verifica firma Coinbase Commerce (HMAC-SHA256)."""
+    if not signature or not secret:
+        return False
+
+    try:
+        computed = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(computed, signature)
+    except Exception:
+        return False
+
+
+@router.post("/coinbase")
+async def coinbase_webhook(request: Request, db: Session = Depends(get_db)):
+    """
+    Webhook Coinbase Commerce
+    Eventi accettati:
+      - charge:confirmed
+      - charge:resolved
+    """
+    raw = await request.body()
+    signature = request.headers.get("X-Cc-Webhook-Signature")
+
+    if not verify_coinbase_signature(raw, signature, WEBHOOK_SECRET):
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-    data = await req.json()
-    # Supponiamo che il PSP invii 'install_id'
-    install_id = data.get("install_id")
-    if not install_id:
-        raise HTTPException(status_code=400, detail="Missing install_id")
+    payload = json.loads(raw.decode("utf-8"))
 
-    lic = db.get(License, install_id)
+    event = payload.get("event", {})
+    event_type = event.get("type", "")
+    charge_data = event.get("data", {})
+    metadata = charge_data.get("metadata", {})
+
+    # Coinbase invia anche "id" utile in fallback
+    charge_id = charge_data.get("id")
+    install_id = metadata.get("install_id")
+
+    # Eventi validi
+    if event_type not in ("charge:confirmed", "charge:resolved"):
+        return {"status": "ignored"}
+
+    # Troviamo la licenza:
+    if install_id:
+        lic = db.query(License).filter(License.install_id == install_id).first()
+    else:
+        lic = db.query(License).filter(License.last_invoice_id == charge_id).first()
+
     if not lic:
-        raise HTTPException(status_code=404, detail="license not found")
+        raise HTTPException(404, "License not found")
 
-    lic.status = LicenseStatus.pro
-    lic.pro_activated_at = datetime.now(tz.utc)
+    # Attiviamo licenza PRO
+    lic.status = LicenseStatus.PRO
+    lic.activated_at = datetime.now(timezone.utc)
     db.commit()
 
-    # TODO: opzionale -> notificare i WS collegati a install_id che la licenza è PRO
-    return {"ok": True}
+    return {"status": "ok"}
