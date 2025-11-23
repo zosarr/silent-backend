@@ -16,6 +16,8 @@ from pydantic import BaseModel
 
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Enum as SqlEnum
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
+from routes_btc import router as btc_router
+app.include_router(btc_router)
 
 # =============================
 #  CREA L’APP PRIMA DI TUTTO
