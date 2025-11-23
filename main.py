@@ -1,4 +1,5 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Set
 import asyncio
 import json
@@ -23,6 +24,13 @@ app.include_router(btc_router)
 #  CREA L’APP PRIMA DI TUTTO
 # =============================
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Import dopo la creazione dell’app
 from routes_license import router as license_router
