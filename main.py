@@ -1,126 +1,75 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Set
-import asyncio
-import json
-import os
+from datetime import datetime, timedelta, timezone
+from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Enum as SqlEnum
+from sqlalchemy.orm import sessionmaker, declarative_base
 import enum
 import logging
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal
 
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Enum as SqlEnum
-from sqlalchemy.orm import sessionmaker, declarative_base, Session
+# === CONFIG ===
+from config import settings
 
-  
+# === ROUTES ===
+from routes_payment import router as payment_router
+from routes_license import router as license_router
 
-
-
-# ============================================================
-#   FASTAPI SETUP
-# ============================================================
-
+# =============================
+#  CREA L’APP
+# =============================
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],   # Puoi restringere in futuro
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# NUOVO IMPORT
-from routes_payment import router as payment_router
-from routes_license import router as license_router
-# Includi router
-app.include_router(license_router)
-app.include_router(payment_router)  
-# ============================================================
-#   ROUTER LICENZE
-# ============================================================
 
-from routes_license import router as license_router
-app.include_router(license_router)
-
-# (I router del pagamento BTC li aggiungeremo dopo)
-# from routes_payment import router as payment_router
-# app.include_router(payment_router)
-
-# ============================================================
+# =============================
 #  WEBSOCKET CHAT
-# ============================================================
+# =============================
 
 rooms: Dict[str, Set[WebSocket]] = {}
-PING_INTERVAL = 20
-
-@app.get("/healthz")
-def healthz():
-    return {"status": "ok"}
 
 @app.get("/")
 def root():
-    return {"status": "ok", "message": "Silent Backend attivo"}
-
-async def join_room(room: str, websocket: WebSocket):
-    rooms.setdefault(room, set()).add(websocket)
-
-async def leave_room(room: str, websocket: WebSocket):
-    peers = rooms.get(room)
-    if peers and websocket in peers:
-        peers.remove(websocket)
-        if not peers:
-            rooms.pop(room, None)
-
-async def broadcast(room: str, msg: str, sender: WebSocket | None = None):
-    for ws in rooms.get(room, set()):
-        if ws is not sender:
-            try:
-                await ws.send_text(msg)
-            except:
-                pass
+    return {"status": "ok", "msg": "Silent Backend Attivo (BTC mode)"}
 
 @app.websocket("/ws/{room}")
-async def websocket_endpoint(ws: WebSocket, room: str):
-    await ws.accept()
-    await join_room(room, ws)
+async def websocket_endpoint(websocket: WebSocket, room: str):
+    await websocket.accept()
+
+    rooms.setdefault(room, set()).add(websocket)
+
     try:
         while True:
-            data = await ws.receive_text()
-            await broadcast(room, data, sender=ws)
+            data = await websocket.receive_text()
+            for ws in list(rooms[room]):
+                if ws is not websocket:
+                    await ws.send_text(data)
     except WebSocketDisconnect:
         pass
     finally:
-        await leave_room(room, ws)
+        rooms[room].remove(websocket)
+        if not rooms[room]:
+            rooms.pop(room, None)
 
-# ============================================================
-#  DATABASE & SETTINGS
-# ============================================================
+# =============================
+#  DATABASE
+# =============================
 
-logger = logging.getLogger("silent")
+logger = logging.getLogger("silent-licenses")
 logging.basicConfig(level=logging.INFO)
-
-class Settings(BaseSettings):
-    database_url: str = os.getenv("DATABASE_URL", "sqlite:///./silent.db")
-    trial_hours: int = int(os.getenv("TRIAL_HOURS", "24"))
-    license_price_eur: Decimal = Decimal("2.99")  # prezzo aggiornato
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-
-settings = Settings()
 
 engine = create_engine(
     settings.database_url,
-    connect_args={"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
+    connect_args={"check_same_thread": False} if settings.database_url.startswith("sqlite") else {},
 )
-
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
-
-# ============================================================
-#   MODELLI DATABASE (License + Order)
-# ============================================================
 
 class LicenseStatus(str, enum.Enum):
     TRIAL = "trial"
@@ -136,24 +85,9 @@ class License(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     activated_at = Column(DateTime(timezone=True), nullable=True)
 
-class Order(Base):
-    __tablename__ = "orders"
-
-    id = Column(Integer, primary_key=True)
-    install_id = Column(String, index=True)
-    amount_btc = Column(String)      
-    address = Column(String)         
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    expires_at = Column(DateTime(timezone=True))
-    paid = Column(Integer, default=0)
-    txid = Column(String, nullable=True)
-
 Base.metadata.create_all(bind=engine)
 
-# ============================================================
-#   FUNZIONI LICENZE
-# ============================================================
-
+# DB dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -161,8 +95,12 @@ def get_db():
     finally:
         db.close()
 
+# =============================
+#  LICENCE API
+# =============================
+
 def get_or_create_license(db: Session, install_id: str):
-    lic = db.query(License).filter(License.install_id == install_id).first()
+    lic = db.query(License).filter_by(install_id=install_id).first()
     if not lic:
         lic = License(install_id=install_id)
         db.add(lic)
@@ -171,36 +109,65 @@ def get_or_create_license(db: Session, install_id: str):
 
 def compute_effective_status(lic: License):
     now = datetime.now(timezone.utc)
+
     if lic.status == LicenseStatus.PRO:
         return LicenseStatus.PRO
+
+    # scaduto il trial?
     if now - lic.created_at > timedelta(hours=settings.trial_hours):
-        lic.status = LicenseStatus.DEMO
         return LicenseStatus.DEMO
+
     return LicenseStatus.TRIAL
 
-class LicenseStatusResponse(BaseModel):
-    status: str
-    trial_hours_total: int
-    trial_hours_left: float
-    created_at: datetime | None
-    activated_at: datetime | None
-
-@app.get("/license/status", response_model=LicenseStatusResponse)
+@app.get("/license/status")
 def license_status(install_id: str, db: Session = Depends(get_db)):
     lic = get_or_create_license(db, install_id)
-    s = compute_effective_status(lic)
-    db.commit()
+    eff = compute_effective_status(lic)
 
-    if s == LicenseStatus.TRIAL:
+    if eff == LicenseStatus.TRIAL:
         expires = lic.created_at + timedelta(hours=settings.trial_hours)
-        left = max(0, (expires - datetime.now(timezone.utc)).total_seconds() / 3600)
+        left = (expires - datetime.now(timezone.utc)).total_seconds() / 3600
     else:
         left = 0
 
-    return LicenseStatusResponse(
-        status=s.value,
-        trial_hours_total=settings.trial_hours,
-        trial_hours_left=left,
-        created_at=lic.created_at,
-        activated_at=lic.activated_at,
-    )
+    return {
+        "status": eff.value,
+        "trial_hours_total": settings.trial_hours,
+        "trial_hours_left": max(0, left),
+        "created_at": lic.created_at,
+        "activated_at": lic.activated_at
+    }
+
+@app.post("/license/register")
+def license_register(data: dict, db: Session = Depends(get_db)):
+    install_id = data.get("install_id")
+    if not install_id:
+        raise HTTPException(400, "install_id mancante")
+
+    get_or_create_license(db, install_id)
+    return {"status": "ok"}
+
+@app.post("/license/activate")
+def activate_license(data: dict, db: Session = Depends(get_db)):
+    install_id = data.get("install_id")
+    if not install_id:
+        raise HTTPException(400, "install_id mancante")
+
+    lic = get_or_create_license(db, install_id)
+    lic.status = LicenseStatus.PRO
+    lic.activated_at = datetime.now(timezone.utc)
+    db.commit()
+
+    return {"status": "ok", "message": "License upgraded to PRO"}
+
+# =============================
+#  BTC PAYMENT ROUTES
+# =============================
+
+app.include_router(payment_router)
+
+# =============================
+#  LICENZA (REGOLE FRONTEND)
+# =============================
+
+app.include_router(license_router)
