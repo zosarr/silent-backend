@@ -24,14 +24,14 @@ async def create_payment(install_id: str, db: Session = Depends(get_db)):
     if not install_id:
         raise HTTPException(400, "install_id mancante")
 
-    # prezzo in euro
-    eur_price = settings.license_price_eur
+    # prezzo fisso in euro (2.99)
+    eur_price = 2.99
 
     # API Blockstream per ottenere prezzo BTC
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get("https://blockstream.info/api/price")
-            btc_price = r.json()["EUR"]  # prezzo 1 BTC in EUR
+            btc_price = r.json()["EUR"]  # prezzo BTC in EUR
     except:
         raise HTTPException(500, "Impossibile ottenere prezzo BTC")
 
@@ -42,8 +42,9 @@ async def create_payment(install_id: str, db: Session = Depends(get_db)):
     satoshi = int(btc_amount * 100_000_000)
 
     payment = {
-        "address": settings.btc_address,   # indirizzo Binance fisso
+        "address": "15Vf5fmhY4uihXWkSvd91aSsDaiZdUkVN8",  # indirizzo Binance fisso
         "amount_satoshi": satoshi,
+        "price_eur": eur_price,
         "expire_at": datetime.now(timezone.utc).timestamp() + 3600,
         "install_id": install_id
     }
@@ -52,7 +53,7 @@ async def create_payment(install_id: str, db: Session = Depends(get_db)):
 
 
 # ============================================================
-# 2) CONTROLLO PAGAMENTO (usato dal frontend ogni 10s)
+# 2) CONTROLLO PAGAMENTO
 # ============================================================
 
 @router.get("/check")
