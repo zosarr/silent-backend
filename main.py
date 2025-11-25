@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Set
 import asyncio
@@ -6,24 +6,20 @@ import json
 import os
 import enum
 import logging
-import hmac
-import hashlib
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from config import settings
-import httpx
-from pydantic_settings import BaseSettings
-from pydantic import BaseModel
 
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Enum as SqlEnum
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
-from routes_btc import router as btc_router
-app.include_router(btc_router)
+from pydantic_settings import BaseSettings
+from pydantic import BaseModel
 
-# =============================
-#  CREA L’APP PRIMA DI TUTTO
-# =============================
+# ============================================================
+#   FASTAPI SETUP
+# ============================================================
+
 app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -32,16 +28,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Import dopo la creazione dell’app
-from routes_license import router as license_router
-from routes_webhooks import router as webhooks_router
+# ============================================================
+#   ROUTER LICENZE
+# ============================================================
 
-# Includi router
+from routes_license import router as license_router
 app.include_router(license_router)
-app.include_router(webhooks_router)
+
+# (I router del pagamento BTC li aggiungeremo dopo)
+# from routes_payment import router as payment_router
+# app.include_router(payment_router)
 
 # ============================================================
-#  WEBSOCKET
+#  WEBSOCKET CHAT
 # ============================================================
 
 rooms: Dict[str, Set[WebSocket]] = {}
@@ -53,7 +52,7 @@ def healthz():
 
 @app.get("/")
 def root():
-    return {"status": "ok", "message": "Silent Backend attivo con Coinbase Commerce"}
+    return {"status": "ok", "message": "Silent Backend attivo"}
 
 async def join_room(room: str, websocket: WebSocket):
     rooms.setdefault(room, set()).add(websocket)
@@ -90,18 +89,13 @@ async def websocket_endpoint(ws: WebSocket, room: str):
 #  DATABASE & SETTINGS
 # ============================================================
 
-logger = logging.getLogger("silent-licenses")
+logger = logging.getLogger("silent")
 logging.basicConfig(level=logging.INFO)
 
 class Settings(BaseSettings):
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./silent.db")
-
     trial_hours: int = int(os.getenv("TRIAL_HOURS", "24"))
-    license_price_eur: Decimal = Decimal(os.getenv("LICENSE_PRICE_EUR", "10"))
-
-    coinbase_api_key: str = os.getenv("COINBASE_API_KEY", "")
-    coinbase_webhook_secret: str = os.getenv("COINBASE_WEBHOOK_SECRET", "")
-    coinbase_api_url: str = os.getenv("COINBASE_API_URL", "https://api.commerce.coinbase.com")
+    license_price_eur: Decimal = Decimal("2.99")  # prezzo aggiornato
 
     class Config:
         env_file = ".env"
@@ -117,6 +111,10 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+# ============================================================
+#   MODELLI DATABASE (License + Order)
+# ============================================================
+
 class LicenseStatus(str, enum.Enum):
     TRIAL = "trial"
     DEMO = "demo"
@@ -130,9 +128,24 @@ class License(Base):
     status = Column(SqlEnum(LicenseStatus), default=LicenseStatus.TRIAL)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     activated_at = Column(DateTime(timezone=True), nullable=True)
-    last_invoice_id = Column(String, nullable=True)
+
+class Order(Base):
+    __tablename__ = "orders"
+
+    id = Column(Integer, primary_key=True)
+    install_id = Column(String, index=True)
+    amount_btc = Column(String)      
+    address = Column(String)         
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    expires_at = Column(DateTime(timezone=True))
+    paid = Column(Integer, default=0)
+    txid = Column(String, nullable=True)
 
 Base.metadata.create_all(bind=engine)
+
+# ============================================================
+#   FUNZIONI LICENZE
+# ============================================================
 
 def get_db():
     db = SessionLocal()
@@ -184,89 +197,3 @@ def license_status(install_id: str, db: Session = Depends(get_db)):
         created_at=lic.created_at,
         activated_at=lic.activated_at,
     )
-
-# ============================================================
-#  COINBASE COMMERCE PAYMENT START
-# ============================================================
-
-class CoinbaseStartRequest(BaseModel):
-    install_id: str
-
-@app.post("/license/pay/coinbase/start")
-async def start_coinbase_payment(payload: CoinbaseStartRequest, db: Session = Depends(get_db)):
-
-    install_id = payload.install_id.strip()
-    if not install_id:
-        raise HTTPException(400, "install_id mancante")
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-CC-Api-Key": settings.coinbase_api_key,
-        "X-CC-Version": "2018-03-22",
-    }
-
-    body = {
-        "name": "Silent PRO License",
-        "local_price": {
-            "amount": str(settings.license_price_eur),
-            "currency": "EUR",
-        },
-        "pricing_type": "fixed_price",
-        "metadata": {"install_id": install_id}
-    }
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(f"{settings.coinbase_api_url}/charges", json=body, headers=headers)
-
-    if resp.status_code >= 400:
-        raise HTTPException(502, "Errore creazione pagamento Coinbase")
-
-    data = resp.json()["data"]
-    lic = get_or_create_license(db, install_id)
-    lic.last_invoice_id = data["id"]
-    db.commit()
-
-    return {"status": "ok", "checkout_url": data["hosted_url"]}
-
-# ============================================================
-#  COINBASE WEBHOOK
-# ============================================================
-
-def verify_coinbase_signature(raw: bytes, signature: str, secret: str):
-    if not signature:
-        return False
-    mac = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(mac, signature)
-
-@app.post("/license/payment/coinbase")
-async def coinbase_webhook(request: Request, db: Session = Depends(get_db)):
-    raw = await request.body()
-    sig = request.headers.get("X-Cc-Webhook-Signature")
-
-    if not verify_coinbase_signature(raw, sig, settings.coinbase_webhook_secret):
-        raise HTTPException(400, "Invalid signature")
-
-    payload = json.loads(raw)
-    event = payload.get("event", {})
-    t = event.get("type")
-
-    if t not in ["charge:confirmed", "charge:resolved"]:
-        return {"status": "ignored"}
-
-    data = event.get("data", {})
-    install_id = data.get("metadata", {}).get("install_id")
-    charge_id = data.get("id")
-
-    if install_id:
-        lic = db.query(License).filter(License.install_id == install_id).first()
-    else:
-        lic = db.query(License).filter(License.last_invoice_id == charge_id).first()
-
-    if not lic:
-        return {"status": "license_not_found"}
-
-    lic.status = LicenseStatus.PRO
-    lic.activated_at = datetime.now(timezone.utc)
-    db.commit()
-
-    return {"status": "ok"}
