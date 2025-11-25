@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Set
 import asyncio
@@ -11,8 +11,10 @@ from decimal import Decimal
 
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Enum as SqlEnum
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
-from pydantic_settings import BaseSettings
-from pydantic import BaseModel
+
+  
+
+
 
 # ============================================================
 #   FASTAPI SETUP
@@ -27,7 +29,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+# NUOVO IMPORT
+from routes_payment import router as payment_router
+from routes_license import router as license_router
+# Includi router
+app.include_router(license_router)
+app.include_router(payment_router)  
 # ============================================================
 #   ROUTER LICENZE
 # ============================================================
