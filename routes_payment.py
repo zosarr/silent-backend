@@ -1,128 +1,88 @@
-from fastapi import APIRouter, Depends, HTTPException
-from datetime import datetime, timedelta, timezone
+from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
+from datetime import datetime, timezone
 import httpx
-import logging
 
-from main import (
-    settings, 
-    get_db, 
-    Order, 
-    License, 
-    LicenseStatus, 
-)
+from config import settings
+from main import get_db, get_or_create_license, LicenseStatus
 
-router = APIRouter()
+router = APIRouter(prefix="/payment", tags=["Payment"])
 
 # ============================================================
-#   CONFIGURAZIONE PAGAMENTO BTC
+# 1) CREAZIONE RICHIESTA DI PAGAMENTO BTC
 # ============================================================
 
-BTC_FIXED_ADDRESS = "15Vf5fmhY4uihXWkSvd91aSsDaiZdUkVN8"
+@router.post("/create")
+async def create_payment(install_id: str, db: Session = Depends(get_db)):
+    """
+    Crea una richiesta BTC per la licenza PRO basata su:
+    - indirizzo fisso Binance
+    - importo in satoshi convertito da EUR
+    - tempo limite 1 ora
+    """
 
-PRICE_EUR = 2.99
-PAYMENT_VALID_MINUTES = 60   # 1 ora
-
-logger = logging.getLogger("btc-payment")
-
-# ============================================================
-#   1) /payment/create - genera ordine BTC
-# ============================================================
-
-@router.post("/payment/create")
-async def payment_create(install_id: str, db: Session = Depends(get_db)):
-
-    install_id = install_id.strip()
     if not install_id:
         raise HTTPException(400, "install_id mancante")
 
-    # ---- 1) recupera prezzo BTC/EUR da Binance ----
+    # prezzo in euro
+    eur_price = settings.license_price_eur
+
+    # API Blockstream per ottenere prezzo BTC
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(
-                "https://api.binance.com/api/v3/ticker/price?symbol=BTCEUR"
-            )
-        btc_eur_price = float(r.json()["price"])
-    except Exception as e:
-        logger.error(f"Errore Binance: {e}")
-        raise HTTPException(502, "Errore recupero prezzo BTC")
+            r = await client.get("https://blockstream.info/api/price")
+            btc_price = r.json()["EUR"]  # prezzo 1 BTC in EUR
+    except:
+        raise HTTPException(500, "Impossibile ottenere prezzo BTC")
 
-    # ---- 2) calcola importo BTC per 2.99 € ----
-    amount_btc = round(PRICE_EUR / btc_eur_price, 8)
+    # converto EUR → BTC
+    btc_amount = float(eur_price) / float(btc_price)
 
-    now = datetime.now(timezone.utc)
-    expires = now + timedelta(minutes=PAYMENT_VALID_MINUTES)
+    # converto BTC → satoshi
+    satoshi = int(btc_amount * 100_000_000)
 
-    # ---- 3) salva ordine nel DB ----
-    order = Order(
-        install_id=install_id,
-        amount_btc=str(amount_btc),
-        address=BTC_FIXED_ADDRESS,
-        created_at=now,
-        expires_at=expires,
-        paid=0,
-        txid=None,
-    )
-    db.add(order)
-    db.commit()
-    db.refresh(order)
-
-    # ---- 4) ritorna all’app ----
-    return {
-        "status": "ok",
-        "order_id": order.id,
-        "btc_address": BTC_FIXED_ADDRESS,
-        "amount_btc": amount_btc,
-        "expires_at": expires.isoformat(),
-        "qr": f"bitcoin:{BTC_FIXED_ADDRESS}?amount={amount_btc}"
+    payment = {
+        "address": settings.btc_address,   # indirizzo Binance fisso
+        "amount_satoshi": satoshi,
+        "expire_at": datetime.now(timezone.utc).timestamp() + 3600,
+        "install_id": install_id
     }
 
+    return payment
+
 
 # ============================================================
-#   2) /payment/check — verifica pagamento sulla blockchain
+# 2) CONTROLLO PAGAMENTO (usato dal frontend ogni 10s)
 # ============================================================
 
-@router.get("/payment/check")
-async def payment_check(order_id: int, db: Session = Depends(get_db)):
+@router.get("/check")
+async def check_payment(address: str, amount: int, install_id: str, db: Session = Depends(get_db)):
+    """
+    Controlla se il pagamento BTC è stato effettuato.
+    """
 
-    order = db.query(Order).filter(Order.id == order_id).first()
-    if not order:
-        raise HTTPException(404, "Ordine non trovato")
+    if not address or not amount:
+        raise HTTPException(400, "Parametri mancanti")
 
-    if order.paid:
-        return {"paid": True, "txid": order.txid}
-
-    now = datetime.now(timezone.utc)
-    if order.expires_at < now:
-        return {"paid": False, "expired": True}
-
-    # ---- Controllo blockchain via Blockstream ----
-    url = f"https://blockstream.info/api/address/{BTC_FIXED_ADDRESS}/utxo"
-
+    # API blockstream — controlla transazioni ricevute
     try:
         async with httpx.AsyncClient(timeout=10) as client:
+            url = f"https://blockstream.info/api/address/{address}"
             r = await client.get(url)
-        utxos = r.json()
+            data = r.json()
     except:
-        raise HTTPException(502, "Errore blockchain")
+        raise HTTPException(500, "Errore durante il controllo transazione")
 
-    # ---- Cerca una transazione con importo corretto ----
-    required_sats = int(float(order.amount_btc) * 100_000_000)
+    # somma totale ricevuta
+    received = data.get("chain_stats", {}).get("funded_txo_sum", 0)
 
-    for tx in utxos:
-        if tx.get("value") == required_sats:
-            # PAGAMENTO TROVATO --------
-            order.paid = 1
-            order.txid = tx.get("txid")
+    # se ricevuto >= amount richiesto → attiva licenza PRO
+    if received >= amount:
+        lic = get_or_create_license(db, install_id)
+        lic.status = LicenseStatus.PRO
+        lic.activated_at = datetime.now(timezone.utc)
+        db.commit()
 
-            # attiva licenza PRO
-            lic = db.query(License).filter(License.install_id == order.install_id).first()
-            if lic:
-                lic.status = LicenseStatus.PRO
-                lic.activated_at = datetime.now(timezone.utc)
+        return {"paid": True, "status": "upgraded"}
 
-            db.commit()
-
-            return {"paid": True, "txid": tx.get("txid")}
-
-    return {"paid": False, "expired": False}
+    return {"paid": False}
