@@ -3,20 +3,18 @@ from decimal import Decimal
 import os
 
 class Settings(BaseSettings):
-    # === DATABASE ===
-    database_url: str = "sqlite:////opt/silent-backend/silent.db"
+    # Database
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:////opt/silent-backend/silent.db")
 
-    # === TRIAL ===
-    trial_hours: int = 24
+    # Licenza
+    TRIAL_HOURS: int = int(os.getenv("TRIAL_HOURS", "24"))
 
-    # === PREZZO LICENZA IN EURO ===
-    btc_amount_eur: Decimal = Decimal("2.99")
+    # Prezzo in EUR
+    LICENSE_PRICE_EUR: Decimal = Decimal(os.getenv("LICENSE_PRICE_EUR", "2.99"))
 
-    # === INDIRIZZO BTC FISSO ===
-    btc_address: str = "15Vf5fmhY4uihXWkSvd91aSsDaiZdUkVN8"   # <-- METTI IL TUO
-
-    # === BLOCKCHAIN API ===
-    blockstream_url: str = "https://blockstream.info/api"
+    # Pagamenti BTC
+    BTC_ADDRESS: str = os.getenv("BTC_ADDRESS", "")
+    BLOCKSTREAM_URL: str = os.getenv("BLOCKSTREAM_URL", "https://blockstream.info/api")
 
     class Config:
         env_file = ".env"
