@@ -1,21 +1,20 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Set
 import logging
-from datetime import datetime, timedelta, timezone
-import enum
-from decimal import Decimal
-import os
 
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Enum as SqlEnum
-from sqlalchemy.orm import sessionmaker, declarative_base, Session
-
+from database import Base, engine
 from config import settings
+
+# Routers
+from routes_license import router as license_router
 from routes_payment import router as payment_router
 
+# =====================================================
+#  INIT APP
+# =====================================================
 app = FastAPI()
 
-# ========== CORS ==========
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -24,36 +23,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ========== WEBSOCKETS ==========
+# Create DB tables
+Base.metadata.create_all(bind=engine)
+
+# Include routes
+app.include_router(license_router)
+app.include_router(payment_router)
+
+# =====================================================
+#  WEBSOCKETS
+# =====================================================
+
 rooms: Dict[str, Set[WebSocket]] = {}
 
 @app.websocket("/ws/{room}")
-async def websocket_endpoint(ws: WebSocket, room: str):
+async def ws_endpoint(ws: WebSocket, room: str):
     await ws.accept()
     rooms.setdefault(room, set()).add(ws)
 
     try:
         while True:
             data = await ws.receive_text()
-            for client in rooms[room]:
-                if client != ws:
-                    await client.send_text(data)
+            for conn in rooms[room]:
+                if conn != ws:
+                    await conn.send_text(data)
     except WebSocketDisconnect:
         rooms[room].remove(ws)
+        if not rooms[room]:
+            del rooms[room]
 
-# ========== DATABASE ==========
-Base = declarative_base()
-
-class LicenseStatus(str, enum.Enum):
-    TRIAL = "trial"
-    DEMO = "demo"
-    PRO = "pro"
-
-class License(Base):
-    __tablename__ = "licenses"
-
-    id = Column(Integer, primary_key=True)
-    install_id = Column(String, unique=True, index=True)
-    status = Column(SqlEnum(LicenseStatus), default=LicenseStatus.TRIAL)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    activated_at = Co_
+# Health check
+@app.get("/")
+def root():
+    return {"status": "ok"}
