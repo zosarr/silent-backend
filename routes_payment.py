@@ -1,42 +1,30 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, HTTPException
 from decimal import Decimal
-
-from config import settings
-from database import get_db
-from models import License, LicenseStatus
-
 import httpx
+from config import settings
 
 router = APIRouter(prefix="/payment", tags=["payment"])
 
-# ================================================
-#  CREA PAY REQUEST
-# ================================================
-
 @router.post("/start")
-async def payment_start(install_id: str, db: Session = Depends(get_db)):
-
+async def payment_start(install_id: str):
     if not install_id:
         raise HTTPException(400, "install_id mancante")
 
-    # Calcolo importo in BTC tramite API blockchain.info
-    url = "https://blockchain.info/tobtc?currency=EUR&value=" + str(settings.LICENSE_PRICE_EUR)
+    # EUR → BTC conversion
+    url = "https://blockchain.info/tobtc?currency=EUR&value=" + str(settings.license_price_eur)
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(url)
 
-    async with httpx.AsyncClient() as client:
-        btc_amount = await client.get(url)
-        btc_amount = btc_amount.text
+    if r.status_code != 200:
+        raise HTTPException(502, "Errore conversione EUR → BTC")
 
-    # Salva sul DB
-    lic = db.query(License).filter_by(install_id=install_id).first()
-    if not lic:
-        lic = License(install_id=install_id)
-        db.add(lic)
-    lic.last_invoice_id = "btc-manual"
-    db.commit()
+    btc_amount = Decimal(r.text)
+
+    # Salva il valore globale
+    settings.btc_amount_eur = float(btc_amount)
 
     return {
         "status": "ok",
-        "btc_address": settings.BTC_ADDRESS,
-        "amount_btc": btc_amount
+        "btc_address": settings.btc_address,
+        "amount_btc": str(btc_amount)
     }
