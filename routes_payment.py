@@ -28,3 +28,10 @@ async def payment_start(install_id: str):
         "btc_address": settings.btc_address,
         "amount_btc": str(btc_amount)
     }
+# 🔥 WebSocket real-time notification
+from main import rooms
+
+room = install_id  # ogni utente ha la propria "stanza"
+if room in rooms:
+    for ws in rooms[room]:
+        await ws.send_text("payment_confirmed")
