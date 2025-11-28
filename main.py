@@ -14,14 +14,6 @@ from routes_payment import router as payment_router
 # =====================================================
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Create DB tables on startup
 Base.metadata.create_all(bind=engine)
 
