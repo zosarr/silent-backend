@@ -54,7 +54,16 @@ def healthz():
 # ============================
 rooms: Dict[str, Set[WebSocket]] = {}
 @app.websocket("/ws/{room}")
-async def ws_endpoint(ws: WebSocket, room: str):
+@app.websocket("/ws")
+async def ws_endpoint(ws: WebSocket):
+
+    # Prendi room e install_id dalla querystring
+    room = ws.query_params.get("room")
+    install_id = ws.query_params.get("install_id")
+
+    if not room or not install_id:
+        await ws.close(code=400)
+        return
 
     origin = ws.headers.get("origin")
 
@@ -64,12 +73,10 @@ async def ws_endpoint(ws: WebSocket, room: str):
         "https://silent-pwa.netlify.app"
     }
 
-    # Se origin non è valido → chiudi
     if origin not in allowed:
         await ws.close(code=403)
         return
 
-    # Accetta WebSocket
     await ws.accept()
 
     if room not in rooms:
@@ -81,7 +88,6 @@ async def ws_endpoint(ws: WebSocket, room: str):
         while True:
             data = await ws.receive_text()
 
-            # Broadcast a tutti tranne il mittente
             for conn in list(rooms[room]):
                 if conn != ws:
                     await conn.send_text(data)
@@ -90,4 +96,3 @@ async def ws_endpoint(ws: WebSocket, room: str):
         rooms[room].remove(ws)
         if not rooms[room]:
             del rooms[room]
-
