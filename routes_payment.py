@@ -1,37 +1,52 @@
 from fastapi import APIRouter, HTTPException
-from decimal import Decimal
-import httpx
-from config import settings
+from pydantic import BaseModel
+from database import SessionLocal, Payment
+from datetime import datetime, timedelta
 
-router = APIRouter(prefix="/payment", tags=["payment"])
+router = APIRouter()
 
-@router.post("/start")
-async def payment_start(install_id: str):
-    if not install_id:
-        raise HTTPException(400, "install_id mancante")
 
-    # EUR → BTC conversion
-    url = "https://blockchain.info/tobtc?currency=EUR&value=" + str(settings.license_price_eur)
-    async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(url)
+class PaymentStartResponse(BaseModel):
+    btc_address: str
+    amount_btc: float
 
-    if r.status_code != 200:
-        raise HTTPException(502, "Errore conversione EUR → BTC")
 
-    btc_amount = Decimal(r.text)
+@router.post("/payment/start")
+async def start_payment(install_id: str):
+    """
+    Genera indirizzo e importo fittizio per la demo.
+    """
+    try:
+        db = SessionLocal()
 
-    # Salva il valore globale
-    settings.btc_amount_eur = float(btc_amount)
+        pay = Payment(
+            install_id=install_id,
+            btc_address="bc1qexampleaddressxxxxxxxxxxxxx",
+            amount_btc=0.00050,
+            status="pending",
+            created_at=datetime.utcnow()
+        )
+        db.add(pay)
+        db.commit()
 
-    return {
-        "status": "ok",
-        "btc_address": settings.btc_address,
-        "amount_btc": str(btc_amount)
-    }
-# 🔥 WebSocket real-time notification
-from main import rooms
+        return PaymentStartResponse(
+            btc_address=pay.btc_address,
+            amount_btc=pay.amount_btc
+        )
 
-room = install_id  # ogni utente ha la propria "stanza"
-if room in rooms:
-    for ws in rooms[room]:
-        await ws.send_text("payment_confirmed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/payment/status")
+async def payment_status(install_id: str):
+    """
+    Restituisce lo stato del pagamento associato all’install_id.
+    """
+    db = SessionLocal()
+    pay = db.query(Payment).filter(Payment.install_id == install_id).first()
+
+    if not pay:
+        return {"status": "none"}
+
+    return {"status": pay.status}
