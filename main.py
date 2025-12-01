@@ -26,6 +26,7 @@ app.add_middleware(
         "https://www.silentpwa.com",
         "https://silent-pwa.netlify.app",
     ],
+     allow_origins=[ ... ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
