@@ -56,6 +56,20 @@ rooms: Dict[str, Set[WebSocket]] = {}
 @app.websocket("/ws/{room}")
 async def ws_endpoint(ws: WebSocket, room: str):
 
+    origin = ws.headers.get("origin")
+
+    allowed = {
+        "https://silentpwa.com",
+        "https://www.silentpwa.com",
+        "https://silent-pwa.netlify.app"
+    }
+
+    # Se origin non è valido → chiudi
+    if origin not in allowed:
+        await ws.close(code=403)
+        return
+
+    # Accetta WebSocket
     await ws.accept()
 
     if room not in rooms:
@@ -66,7 +80,9 @@ async def ws_endpoint(ws: WebSocket, room: str):
     try:
         while True:
             data = await ws.receive_text()
-            for conn in rooms[room]:
+
+            # Broadcast a tutti tranne il mittente
+            for conn in list(rooms[room]):
                 if conn != ws:
                     await conn.send_text(data)
 
