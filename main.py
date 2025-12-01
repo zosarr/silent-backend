@@ -17,6 +17,18 @@ app = FastAPI()
 # Create DB tables on startup
 Base.metadata.create_all(bind=engine)
 
+# Add CORS HERE
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://silentpwa.com",
+        "https://www.silentpwa.com",
+        "https://silent-pwa.netlify.app",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 # Include routes
 app.include_router(license_router)
 app.include_router(payment_router)
