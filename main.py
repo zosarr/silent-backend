@@ -53,30 +53,19 @@ def healthz():
 # WEBSOCKETS
 # ============================
 rooms: Dict[str, Set[WebSocket]] = {}
-
 @app.websocket("/ws/{room}")
 async def ws_endpoint(ws: WebSocket, room: str):
 
-    origin = ws.headers.get("origin")
-
-    allowed = [
-        "https://silentpwa.com",
-        "https://www.silentpwa.com",
-        "https://silent-pwa.netlify.app"
-    ]
-
-    if origin not in allowed:
-        await ws.close(code=403)
-        return
-
     await ws.accept()
 
-    rooms.setdefault(room, set()).add(ws)
+    if room not in rooms:
+        rooms[room] = set()
+
+    rooms[room].add(ws)
 
     try:
         while True:
             data = await ws.receive_text()
-
             for conn in rooms[room]:
                 if conn != ws:
                     await conn.send_text(data)
@@ -85,3 +74,4 @@ async def ws_endpoint(ws: WebSocket, room: str):
         rooms[room].remove(ws)
         if not rooms[room]:
             del rooms[room]
+
