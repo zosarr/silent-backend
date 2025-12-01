@@ -9,15 +9,16 @@ from config import settings
 from routes_license import router as license_router
 from routes_payment import router as payment_router
 
-# =====================================================
-#  INIT APP
-# =====================================================
+
+# ============================
+# INIT APP
+# ============================
 app = FastAPI()
 
-# Create DB tables on startup
+# Create tables
 Base.metadata.create_all(bind=engine)
 
-# Add CORS HERE
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -29,30 +30,45 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# Include routes
+
+# Routers
 app.include_router(license_router)
 app.include_router(payment_router)
 
-# =====================================================
-#  HEALTH CHECK
-# =====================================================
 
+# ============================
+# HEALTH
+# ============================
 @app.get("/")
 def root():
     return {"status": "ok", "service": "silent-backend"}
+
 
 @app.get("/healthz")
 def healthz():
     return {"status": "ok"}
 
-# =====================================================
-#  WEBSOCKETS
-# =====================================================
 
+# ============================
+# WEBSOCKETS
+# ============================
 rooms: Dict[str, Set[WebSocket]] = {}
 
 @app.websocket("/ws/{room}")
 async def ws_endpoint(ws: WebSocket, room: str):
+
+    origin = ws.headers.get("origin")
+
+    allowed = [
+        "https://silentpwa.com",
+        "https://www.silentpwa.com",
+        "https://silent-pwa.netlify.app"
+    ]
+
+    if origin not in allowed:
+        await ws.close(code=403)
+        return
+
     await ws.accept()
 
     rooms.setdefault(room, set()).add(ws)
@@ -61,7 +77,6 @@ async def ws_endpoint(ws: WebSocket, room: str):
         while True:
             data = await ws.receive_text()
 
-            # broadcast to all except sender
             for conn in rooms[room]:
                 if conn != ws:
                     await conn.send_text(data)
