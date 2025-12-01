@@ -1,15 +1,9 @@
 from fastapi import APIRouter, HTTPException, Depends
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
 
-from db import SessionLocal, engine
-from models import Base, License, LicenseStatus
-from config import settings
+from database import SessionLocal, License
 
-
-
-Base.metadata.create_all(bind=engine)
 
 router = APIRouter(prefix="/license", tags=["license"])
 
@@ -22,40 +16,41 @@ def get_db():
         db.close()
 
 
-class RegisterRequest(BaseModel):
-    install_id: str
+TRIAL_DURATION_HOURS = 24
 
 
-class LicenseStatusResponse(BaseModel):
-    status: str
-    trial_hours_total: int
-    trial_hours_left: float
-    created_at: datetime | None = None
-    activated_at: datetime | None = None
+class LicenseStatusResponse:
+    def __init__(self, status, trial_hours_total, trial_hours_left, created_at, activated_at):
+        self.status = status
+        self.trial_hours_total = trial_hours_total
+        self.trial_hours_left = trial_hours_left
+        self.created_at = created_at
+        self.activated_at = activated_at
 
 
-def compute_effective_status(lic: License) -> LicenseStatus:
-    if lic.status == LicenseStatus.PRO:
-        return LicenseStatus.PRO
+def compute_status(lic: License):
+    if lic.mode == "pro":
+        return "pro"
 
-    now = datetime.now(timezone.utc)
-    elapsed = now - lic.created_at
+    now = datetime.utcnow()
+    elapsed = now - lic.trial_started
 
-    if elapsed > timedelta(hours=settings.trial_hours):
-        if lic.status != LicenseStatus.DEMO:
-            lic.status = LicenseStatus.DEMO
-        return LicenseStatus.DEMO
+    if elapsed.total_seconds() > TRIAL_DURATION_HOURS * 3600:
+        lic.mode = "demo"
+        return "demo"
 
-    return LicenseStatus.TRIAL
+    return "trial"
 
 
-def get_or_create_license(db: Session, install_id: str) -> License:
+def get_or_create_license(db: Session, install_id: str):
     lic = db.query(License).filter(License.install_id == install_id).first()
     if not lic:
+        now = datetime.utcnow()
         lic = License(
             install_id=install_id,
-            status=LicenseStatus.TRIAL,
-            created_at=datetime.now(timezone.utc),
+            mode="trial",
+            trial_started=now,
+            pro_expires=None
         )
         db.add(lic)
         db.commit()
@@ -63,56 +58,52 @@ def get_or_create_license(db: Session, install_id: str) -> License:
     return lic
 
 
-@router.post("/register", response_model=LicenseStatusResponse)
-def register(body: RegisterRequest, db: Session = Depends(get_db)):
-    install_id = body.install_id.strip()
+@router.post("/register")
+def register(install_id: str, db: Session = Depends(get_db)):
     if not install_id:
         raise HTTPException(400, "install_id mancante")
 
     lic = get_or_create_license(db, install_id)
-    effective_status = compute_effective_status(lic)
+    mode = compute_status(lic)
     db.commit()
 
-    now = datetime.now(timezone.utc)
-    if effective_status == LicenseStatus.TRIAL:
-        expires_at = lic.created_at + timedelta(hours=settings.trial_hours)
-        trial_left = max(0.0, (expires_at - now).total_seconds() / 3600)
+    # trial
+    if mode == "trial":
+        now = datetime.utcnow()
+        ends = lic.trial_started + timedelta(hours=TRIAL_DURATION_HOURS)
+        left = max(0, (ends - now).total_seconds() / 3600)
     else:
-        trial_left = 0.0
+        left = 0
 
-    return LicenseStatusResponse(
-        status=effective_status.value,
-        trial_hours_total=settings.trial_hours,
-        trial_hours_left=trial_left,
-        created_at=lic.created_at,
-        activated_at=lic.activated_at,
-    )
+    return {
+        "status": mode,
+        "trial_hours_total": TRIAL_DURATION_HOURS,
+        "trial_hours_left": left,
+        "created_at": lic.trial_started,
+        "activated_at": lic.pro_expires
+    }
 
 
-@router.get("/status", response_model=LicenseStatusResponse)
+@router.get("/status")
 def status(install_id: str, db: Session = Depends(get_db)):
     if not install_id:
         raise HTTPException(400, "install_id mancante")
 
-    lic = db.query(License).filter(License.install_id == install_id).first()
-    if not lic:
-        raise HTTPException(404, "install_id non trovato")
-
-    effective_status = compute_effective_status(lic)
+    lic = get_or_create_license(db, install_id)
+    mode = compute_status(lic)
     db.commit()
 
-    now = datetime.now(timezone.utc)
-    if effective_status == LicenseStatus.TRIAL:
-        expires_at = lic.created_at + timedelta(hours=settings.trial_hours)
-        trial_left = max(0.0, (expires_at - now).total_seconds() / 3600)
+    if mode == "trial":
+        now = datetime.utcnow()
+        ends = lic.trial_started + timedelta(hours=TRIAL_DURATION_HOURS)
+        left = max(0, (ends - now).total_seconds() / 3600)
     else:
-        trial_left = 0.0
+        left = 0
 
-    return LicenseStatusResponse(
-        status=effective_status.value,
-        trial_hours_total=settings.trial_hours,
-        trial_hours_left=trial_left,
-        created_at=lic.created_at,
-        activated_at=lic.activated_at,
-    )
-
+    return {
+        "status": mode,
+        "trial_hours_total": TRIAL_DURATION_HOURS,
+        "trial_hours_left": left,
+        "created_at": lic.trial_started,
+        "activated_at": lic.pro_expires
+    }
