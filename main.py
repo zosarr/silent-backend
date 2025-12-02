@@ -5,20 +5,14 @@ from typing import Dict, Set
 from database import Base, engine
 from config import settings
 
-# Routers
 from routes_license import router as license_router
 from routes_payment import router as payment_router
 
 
-# ============================
-# INIT APP
-# ============================
 app = FastAPI()
 
-# Create tables
 Base.metadata.create_all(bind=engine)
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -31,14 +25,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Routers
 app.include_router(license_router)
 app.include_router(payment_router)
 
 
-# ============================
-# HEALTH
-# ============================
 @app.get("/")
 def root():
     return {"status": "ok", "service": "silent-backend"}
@@ -49,16 +39,7 @@ def healthz():
     return {"status": "ok"}
 
 
-# ============================
-# WEBSOCKETS
-# ============================
 rooms: Dict[str, Set[WebSocket]] = {}
-@app.websocket("/ws/{room}")
-@app.websocket("/ws")
-async def ws_endpoint(ws: WebSocket):
-
-    # Prendi room e install_id dalla querystring
-   rooms: Dict[str, Set[WebSocket]] = {}
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
@@ -75,7 +56,7 @@ async def ws_endpoint(ws: WebSocket):
     allowed = {
         "https://silentpwa.com",
         "https://www.silentpwa.com",
-        "https://silent-pwa.netlify.app"
+        "https://silent-pwa.netlify.app",
     }
 
     if origin not in allowed:
@@ -89,6 +70,7 @@ async def ws_endpoint(ws: WebSocket):
     try:
         while True:
             data = await ws.receive_text()
+
             for conn in list(rooms[room]):
                 if conn != ws:
                     await conn.send_text(data)
