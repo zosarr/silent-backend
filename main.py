@@ -58,6 +58,11 @@ rooms: Dict[str, Set[WebSocket]] = {}
 async def ws_endpoint(ws: WebSocket):
 
     # Prendi room e install_id dalla querystring
+   rooms: Dict[str, Set[WebSocket]] = {}
+
+@app.websocket("/ws")
+async def ws_endpoint(ws: WebSocket):
+
     room = ws.query_params.get("room")
     install_id = ws.query_params.get("install_id")
 
@@ -79,15 +84,11 @@ async def ws_endpoint(ws: WebSocket):
 
     await ws.accept()
 
-    if room not in rooms:
-        rooms[room] = set()
-
-    rooms[room].add(ws)
+    rooms.setdefault(room, set()).add(ws)
 
     try:
         while True:
             data = await ws.receive_text()
-
             for conn in list(rooms[room]):
                 if conn != ws:
                     await conn.send_text(data)
