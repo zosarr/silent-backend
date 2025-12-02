@@ -107,3 +107,11 @@ def status(install_id: str, db: Session = Depends(get_db)):
         "created_at": lic.trial_started,
         "activated_at": lic.pro_expires
     }
+@router.options("/status")
+async def options_status():
+    return {}
+
+@router.options("/register")
+async def options_register():
+    return {}
+
