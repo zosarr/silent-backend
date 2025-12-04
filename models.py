@@ -10,6 +10,7 @@ class LicenseStatus(str, enum.Enum):
 
 class License(Base):
     __tablename__ = "licenses"
+    __table_args__ = {"extend_existing": True}  # <— FIX IMPORTANTE
 
     id = Column(Integer, primary_key=True, index=True)
     install_id = Column(String, unique=True, index=True)
@@ -22,5 +23,3 @@ class License(Base):
     btc_address = Column(String, nullable=True)
     amount_btc = Column(String, nullable=True)
     invoice_id = Column(String, nullable=True)
-
-
