@@ -115,3 +115,77 @@ async def options_status():
 async def options_register():
     return {}
 
+# ==========================
+#   DEV DEBUG ENDPOINTS
+# ==========================
+from fastapi import Depends
+from datetime import timedelta, datetime
+from models import License
+from sqlalchemy.orm import Session
+from database import get_db
+
+DEV_SECRET = "debug-2024"   # puoi scegliere una password
+
+def check_dev(secret: str):
+    if secret != DEV_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+
+@router.post("/license/dev/reset")
+def dev_reset(install_id: str, secret: str, db: Session = Depends(get_db)):
+    check_dev(secret)
+
+    lic = db.query(License).filter_by(install_id=install_id).first()
+    if not lic:
+        lic = License(install_id=install_id)
+        db.add(lic)
+
+    lic.status = "trial"
+    lic.activated_at = None
+    lic.created_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "status": "trial"}
+
+
+@router.post("/license/dev/expire")
+def dev_expire(install_id: str, secret: str, db: Session = Depends(get_db)):
+    check_dev(secret)
+
+    lic = db.query(License).filter_by(install_id=install_id).first()
+    if not lic:
+        return {"error": "not found"}
+
+    lic.status = "demo"
+    db.commit()
+    return {"ok": True, "status": "demo"}
+
+
+@router.post("/license/dev/unexpire")
+def dev_unexpire(install_id: str, secret: str, db: Session = Depends(get_db)):
+    check_dev(secret)
+
+    lic = db.query(License).filter_by(install_id=install_id).first()
+    if not lic:
+        return {"error": "not found"}
+
+    lic.status = "trial"
+    lic.created_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "status": "trial"}
+
+
+@router.post("/license/dev/pro")
+def dev_set_pro(install_id: str, secret: str, db: Session = Depends(get_db)):
+    check_dev(secret)
+
+    lic = db.query(License).filter_by(install_id=install_id).first()
+    if not lic:
+        return {"error": "not found"}
+
+    lic.status = "pro"
+    lic.activated_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "status": "pro"}
+
+
+
